@@ -1,0 +1,63 @@
+import type { ModelRequest, ChatMessage } from "./types";
+import type { HubAgent } from "./agent";
+
+export class ModelPlanBuilder {
+  private sysParts: string[] = [];
+  private _toolChoice: ModelRequest["toolChoice"] = "auto";
+  private _responseFormat: ModelRequest["responseFormat"];
+  private _temperature?: number;
+  private _maxTokens?: number;
+  private _stop?: string[];
+  private _model?: string;
+  private _messages?: ChatMessage[];
+
+  constructor(private readonly agent: HubAgent) {}
+
+  addSystemPrompt(...parts: Array<string | undefined | null>) {
+    for (const p of parts) if (p) this.sysParts.push(p);
+  }
+  setModel(id?: string) {
+    if (id) this._model = id;
+  }
+  setToolChoice(choice: ModelRequest["toolChoice"]) {
+    this._toolChoice = choice ?? "auto";
+  }
+  setResponseFormat(fmt: ModelRequest["responseFormat"]) {
+    this._responseFormat = fmt;
+  }
+  setTemperature(t?: number) {
+    this._temperature = t;
+  }
+  setMaxTokens(n?: number) {
+    this._maxTokens = n;
+  }
+  setStop(stop?: string[]) {
+    this._stop = stop;
+  }
+  setMessages(messages: ChatMessage[]) {
+    this._messages = messages;
+  }
+
+  build(): ModelRequest {
+    const systemPrompt = [this.agent.blueprint.prompt, ...this.sysParts]
+      .filter(Boolean)
+      .join("\n\n");
+
+    const toolDefs = Object.values(this.agent.tools).map((tool) => tool.meta);
+
+    // Use overridden messages if set by a plugin (e.g., context), otherwise default from store
+    const messages = this._messages ?? this.agent.messages.filter((m) => m.role !== "system");
+    
+    return {
+      model: this._model ?? this.agent.model ?? "openai:gpt-4.1",
+      systemPrompt,
+      messages,
+      toolDefs,
+      toolChoice: this._toolChoice,
+      responseFormat: this._responseFormat,
+      temperature: this._temperature,
+      maxTokens: this._maxTokens,
+      stop: this._stop
+    };
+  }
+}
