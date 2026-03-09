@@ -575,7 +575,22 @@ export class AgentHub {
             this.emit(AgentEventType.CHAT_START, {
               "gen_ai.request.model": req.model,
             });
-            const out = await baseProvider.invoke(req, opts);
+            // Use streaming internally so CHAT_CHUNK events are emitted
+            // in real-time to WebSocket subscribers. Falls back to non-streaming
+            // if the provider doesn't implement stream().
+            let out;
+            try {
+              out = await baseProvider.stream(req, (d) => {
+                this.emit(AgentEventType.CHAT_CHUNK, { "gen_ai.content.chunk": d });
+              });
+            } catch (e: any) {
+              // Fallback to non-streaming if stream() is not implemented
+              if (e?.message?.includes?.("not implemented")) {
+                out = await baseProvider.invoke(req, opts);
+              } else {
+                throw e;
+              }
+            }
             this.emit(AgentEventType.CHAT_FINISH, {
               "gen_ai.usage.input_tokens": out.usage?.promptTokens ?? 0,
               "gen_ai.usage.output_tokens": out.usage?.completionTokens ?? 0,
@@ -591,8 +606,8 @@ export class AgentHub {
               onDelta(d);
             });
             this.emit(AgentEventType.CHAT_FINISH, {
-              "gen_ai.usage.input_tokens": undefined,
-              "gen_ai.usage.output_tokens": undefined,
+              "gen_ai.usage.input_tokens": out.usage?.promptTokens ?? 0,
+              "gen_ai.usage.output_tokens": out.usage?.completionTokens ?? 0,
             });
             return out;
           },

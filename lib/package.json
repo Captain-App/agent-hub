@@ -1,6 +1,6 @@
 {
   "name": "agents-hub",
-  "version": "0.0.13",
+  "version": "0.0.14-co2.1",
   "description": "A serverless agentic runtime for Cloudflare Workers",
   "keywords": [
     "cloudflare",
@@ -60,6 +60,7 @@
     "access": "public"
   },
   "scripts": {
+    "prepare": "tsup",
     "build": "tsup",
     "docs": "typedoc",
     "tsc": "tsc --noEmit",
