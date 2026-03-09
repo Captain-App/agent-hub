@@ -2,7 +2,6 @@
 .wrangler.bak/
 node_modules/
 .vite/
-dist/
 *.swp
 .dev.vars
 .alchemy
