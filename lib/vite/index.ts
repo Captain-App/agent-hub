@@ -122,6 +122,16 @@ export interface AgentsPluginOptions {
   cloudflare?: CloudflareConfig | null;
 
   /**
+   * Enable Sentry integration.
+   * When true, wraps the Worker handler with `withSentry()` and
+   * Durable Objects with `instrumentDurableObjectWithSentry()`.
+   * Requires `@sentry/cloudflare` as a dependency and `SENTRY_DSN`
+   * as a Worker secret.
+   * @default false
+   */
+  sentry?: boolean;
+
+  /**
    * R2 bucket name for agent filesystem storage.
    * @default "agents-hub-fs"
    */
@@ -246,6 +256,7 @@ function generateCode(
   srcDir: string,
   outFile: string,
   sandbox: boolean,
+  sentry: boolean = false,
 ): string {
   const outDir = path.dirname(outFile);
   const imports: string[] = [];
@@ -255,6 +266,9 @@ function generateCode(
 
   imports.push('import { AgentHub } from "agents-hub";');
 
+  if (sentry) {
+    imports.push('import * as Sentry from "@sentry/cloudflare";');
+  }
   if (sandbox) {
     imports.push('import { Sandbox } from "@cloudflare/sandbox";');
   }
@@ -324,15 +338,36 @@ function generateCode(
     ...agentRegistrations,
     ";",
     "",
-    "const { HubAgent, Agency, handler } = hub.export();",
   ];
 
-  if (sandbox) {
-    lines.push("export { HubAgent, Agency, Sandbox };");
+  if (sentry) {
+    // Wrap DOs and handler with Sentry instrumentation.
+    lines.push(
+      "const { HubAgent: _HubAgent, Agency: _Agency, handler: _handler } = hub.export();",
+      "",
+      "const _sentryOptions = (env: Record<string, unknown>) => ({",
+      "  dsn: env.SENTRY_DSN as string,",
+      "  environment: (env.SENTRY_ENVIRONMENT || env.ENVIRONMENT || 'development') as string,",
+      "  tracesSampleRate: 1.0,",
+      "  sendDefaultPii: false,",
+      "});",
+      "",
+      "export const HubAgent = Sentry.instrumentDurableObjectWithSentry(_sentryOptions, _HubAgent);",
+      "export const Agency = Sentry.instrumentDurableObjectWithSentry(_sentryOptions, _Agency);",
+    );
+    if (sandbox) {
+      lines.push("export { Sandbox };");
+    }
+    lines.push("export default Sentry.withSentry(_sentryOptions, _handler);");
   } else {
-    lines.push("export { HubAgent, Agency };");
+    lines.push("const { HubAgent, Agency, handler } = hub.export();");
+    if (sandbox) {
+      lines.push("export { HubAgent, Agency, Sandbox };");
+    } else {
+      lines.push("export { HubAgent, Agency };");
+    }
+    lines.push("export default handler;");
   }
-  lines.push("export default handler;");
   lines.push("");
 
   return lines.join("\n");
@@ -503,10 +538,11 @@ export default function agentsPlugin(
   const outFile = path.resolve(options.outFile || "./_generated.ts");
   const defaultModel = options.defaultModel || "gpt-4o";
   const sandbox = options.sandbox ?? false;
+  const sentry = options.sentry ?? false;
 
   function regenerate() {
     const discovery = discoverModules(srcDir);
-    const code = generateCode(discovery, defaultModel, srcDir, outFile, sandbox);
+    const code = generateCode(discovery, defaultModel, srcDir, outFile, sandbox, sentry);
 
     fs.mkdirSync(path.dirname(outFile), { recursive: true });
     fs.writeFileSync(outFile, code, "utf-8");
