@@ -253,9 +253,19 @@ export abstract class HubAgent<
     }
   }
 
+  protected _pluginsInitialized = false;
+
   async run() {
     try {
       if (this.runState.status !== "running") return;
+
+      // Re-run plugin onInit after DO hibernation/eviction.
+      // _tools is an instance variable that gets reset when the DO rehydrates,
+      // so dynamically registered tools (e.g. from client-delegation plugin) are lost.
+      if (!this._pluginsInitialized) {
+        for (const p of this.plugins) await p.onInit?.(this.pluginContext);
+        this._pluginsInitialized = true;
+      }
 
       // MAX_ITERATIONS: undefined = use default (200), 0 = disabled, >0 = custom limit
       const maxIterations = this.vars.MAX_ITERATIONS as number | undefined;
