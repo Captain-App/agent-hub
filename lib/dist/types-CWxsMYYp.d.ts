@@ -278,6 +278,7 @@ declare abstract class HubAgent<Env extends AgentEnv = AgentEnv> extends Agent<E
     ensureScheduled(): Promise<void>;
     registerThread(req: Request): Promise<Response>;
     invoke(req: Request): Promise<Response>;
+    protected _pluginsInitialized: boolean;
     run(): Promise<void>;
     action(req: Request): Promise<Response>;
     getState(_req: Request): Response;

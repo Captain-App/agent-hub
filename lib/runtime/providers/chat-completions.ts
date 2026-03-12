@@ -114,6 +114,20 @@ function fromOA(choice: { message: OAChatMsg }): ChatMessage {
   return { role: "assistant", reasoning: msg?.reasoning, content: msg?.content ?? "" };
 }
 
+function isBlankAssistantMessage(message: ChatMessage): boolean {
+  return (
+    message.role === "assistant" &&
+    "content" in message &&
+    message.content.trim().length === 0
+  );
+}
+
+function createEmptyAssistantError(): Error {
+  return new Error(
+    "Chat completions returned empty assistant content without tool calls"
+  );
+}
+
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   if (ms <= 0) return Promise.resolve();
   return new Promise((resolve, reject) => {
@@ -226,6 +240,9 @@ export function makeChatCompletions(
             usage: { prompt_tokens: number; completion_tokens: number };
           };
           const message = fromOA(json.choices?.[0]);
+          if (isBlankAssistantMessage(message)) {
+            throw createEmptyAssistantError();
+          }
           const usage = json.usage
             ? {
                 promptTokens: json.usage.prompt_tokens,
@@ -255,128 +272,154 @@ export function makeChatCompletions(
     async stream(req, onDelta) {
       const body = toOA(req);
       const payload = JSON.stringify({ ...body, stream: true, stream_options: { include_usage: true } });
+      for (let attempt = 0; ; attempt++) {
+        const deltaParts: string[] = [];
 
-      const res = await fetch(`${baseUrl}/chat/completions`, {
-        method: "POST",
-        headers,
-        body: payload
-      });
+        try {
+          const res = await fetch(`${baseUrl}/chat/completions`, {
+            method: "POST",
+            headers,
+            body: payload
+          });
 
-      if (!res.ok) {
-        const errTxt = await res.text().catch(() => "");
-        throw new NonRetryableError(
-          `Chat completions stream error ${res.status}: ${errTxt}`
-        );
-      }
-
-      // Parse SSE stream and accumulate the final message
-      let contentAcc = "";
-      let reasoningAcc = "";
-      const toolCallsAcc: Array<{
-        index: number;
-        id: string;
-        name: string;
-        arguments: string;
-      }> = [];
-      let usage: { prompt_tokens: number; completion_tokens: number } | undefined;
-
-      const reader = res.body!.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || !trimmed.startsWith("data: ")) continue;
-          const data = trimmed.slice(6);
-          if (data === "[DONE]") continue;
-
-          let parsed: any;
-          try {
-            parsed = JSON.parse(data);
-          } catch {
-            continue;
+          if (!res.ok) {
+            const errTxt = await res.text().catch(() => "");
+            throw new NonRetryableError(
+              `Chat completions stream error ${res.status}: ${errTxt}`
+            );
           }
 
-          // Capture usage from the final chunk (stream_options: include_usage)
-          if (parsed.usage) {
-            usage = parsed.usage;
-          }
+          // Parse SSE stream and accumulate the final message
+          let contentAcc = "";
+          let reasoningAcc = "";
+          const toolCallsAcc: Array<{
+            index: number;
+            id: string;
+            name: string;
+            arguments: string;
+          }> = [];
+          let usage:
+            | { prompt_tokens: number; completion_tokens: number }
+            | undefined;
 
-          const choice = parsed.choices?.[0];
-          if (!choice) continue;
+          const reader = res.body!.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
 
-          const delta = choice.delta;
-          if (!delta) continue;
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
 
-          // Content delta
-          if (delta.content) {
-            contentAcc += delta.content;
-            onDelta(delta.content);
-          }
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() ?? "";
 
-          // Reasoning delta (extended thinking / DeepSeek)
-          if (delta.reasoning) {
-            reasoningAcc += delta.reasoning;
-          }
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed || !trimmed.startsWith("data: ")) continue;
+              const data = trimmed.slice(6);
+              if (data === "[DONE]") continue;
 
-          // Tool call deltas
-          if (delta.tool_calls) {
-            for (const tc of delta.tool_calls) {
-              const idx = tc.index ?? 0;
-              if (!toolCallsAcc[idx]) {
-                toolCallsAcc[idx] = {
-                  index: idx,
-                  id: tc.id ?? "",
-                  name: tc.function?.name ?? "",
-                  arguments: tc.function?.arguments ?? ""
-                };
-              } else {
-                if (tc.id) toolCallsAcc[idx].id = tc.id;
-                if (tc.function?.name) toolCallsAcc[idx].name += tc.function.name;
-                if (tc.function?.arguments) toolCallsAcc[idx].arguments += tc.function.arguments;
+              let parsed: any;
+              try {
+                parsed = JSON.parse(data);
+              } catch {
+                continue;
+              }
+
+              // Capture usage from the final chunk (stream_options: include_usage)
+              if (parsed.usage) {
+                usage = parsed.usage;
+              }
+
+              const choice = parsed.choices?.[0];
+              if (!choice) continue;
+
+              const delta = choice.delta;
+              if (!delta) continue;
+
+              // Content delta
+              if (delta.content) {
+                contentAcc += delta.content;
+                deltaParts.push(delta.content);
+              }
+
+              // Reasoning delta (extended thinking / DeepSeek)
+              if (delta.reasoning) {
+                reasoningAcc += delta.reasoning;
+              }
+
+              // Tool call deltas
+              if (delta.tool_calls) {
+                for (const tc of delta.tool_calls) {
+                  const idx = tc.index ?? 0;
+                  if (!toolCallsAcc[idx]) {
+                    toolCallsAcc[idx] = {
+                      index: idx,
+                      id: tc.id ?? "",
+                      name: tc.function?.name ?? "",
+                      arguments: tc.function?.arguments ?? ""
+                    };
+                  } else {
+                    if (tc.id) toolCallsAcc[idx].id = tc.id;
+                    if (tc.function?.name) toolCallsAcc[idx].name += tc.function.name;
+                    if (tc.function?.arguments) toolCallsAcc[idx].arguments += tc.function.arguments;
+                  }
+                }
               }
             }
           }
+
+          // Assemble final message
+          let message: ChatMessage;
+          if (toolCallsAcc.length > 0) {
+            message = {
+              role: "assistant",
+              reasoning: reasoningAcc || undefined,
+              toolCalls: toolCallsAcc.map((tc) => ({
+                id: tc.id,
+                name: tc.name,
+                args: safeParseJSON(tc.arguments)
+              }))
+            };
+          } else {
+            message = {
+              role: "assistant",
+              reasoning: reasoningAcc || undefined,
+              content: contentAcc
+            };
+          }
+
+          if (isBlankAssistantMessage(message)) {
+            throw createEmptyAssistantError();
+          }
+
+          for (const delta of deltaParts) {
+            onDelta(delta);
+          }
+
+          return {
+            message,
+            usage: usage
+              ? {
+                  promptTokens: usage.prompt_tokens,
+                  completionTokens: usage.completion_tokens
+                }
+              : undefined
+          };
+        } catch (error) {
+          if (
+            retry &&
+            attempt < retry.maxRetries &&
+            !(error instanceof NonRetryableError)
+          ) {
+            await sleep(computeDelayMs(attempt, retry, null));
+            continue;
+          }
+
+          throw error;
         }
       }
-
-      // Assemble final message
-      let message: ChatMessage;
-      if (toolCallsAcc.length > 0) {
-        message = {
-          role: "assistant",
-          reasoning: reasoningAcc || undefined,
-          toolCalls: toolCallsAcc.map((tc) => ({
-            id: tc.id,
-            name: tc.name,
-            args: safeParseJSON(tc.arguments)
-          }))
-        };
-      } else {
-        message = {
-          role: "assistant",
-          reasoning: reasoningAcc || undefined,
-          content: contentAcc
-        };
-      }
-
-      return {
-        message,
-        usage: usage
-          ? {
-              promptTokens: usage.prompt_tokens,
-              completionTokens: usage.completion_tokens
-            }
-          : undefined
-      };
     }
   };
 }
