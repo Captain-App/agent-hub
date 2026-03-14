@@ -1,4 +1,4 @@
-import { d as AgentPlugin } from './types-ROueRolu.js';
+import { d as AgentPlugin } from './types-DnNYuqqZ.js';
 
 /**
  * Resolves `$VAR_NAME` patterns in tool arguments using agent vars.
@@ -29,21 +29,6 @@ type Todo = {
  */
 declare const planning: AgentPlugin;
 
-/**
- * Context management plugin that automatically summarizes long conversations.
- *
- * When the message count exceeds CONTEXT_SUMMARIZE_AT, older messages are
- * summarized using an LLM call, archived to the filesystem, and deleted
- * from the active context. The summary is prepended to future requests.
- *
- * Optionally extracts important facts as "memories" and stores them to
- * a memory disk for long-term retrieval.
- *
- * @var CONTEXT_KEEP_RECENT - Messages to keep in full (default: 20)
- * @var CONTEXT_SUMMARIZE_AT - Trigger summarization threshold (default: 40)
- * @var CONTEXT_MEMORY_DISK - Optional disk name for extracted memories
- * @var CONTEXT_SUMMARY_MODEL - Optional model for summarization
- */
 declare const context: AgentPlugin;
 
 declare const subagents: AgentPlugin;

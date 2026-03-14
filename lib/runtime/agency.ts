@@ -220,6 +220,9 @@ export class Agency extends Agent<AgentEnv> {
     // Metrics
     router.get("/metrics", () => this.handleGetMetrics());
 
+    // Presence (which agents have app clients connected)
+    router.get("/presence", (req: IRequest) => this.handlePresence(req));
+
     // Internal
     router.get("/internal/blueprint/:name", (req: IRequest) => this.handleGetInternalBlueprint(req.params.name));
 
@@ -1538,6 +1541,56 @@ export class Agency extends Agent<AgentEnv> {
     return Response.json({
       ok: true,
       path: "/" + fsPath,
+    });
+  }
+
+  // ============================================================
+  // Presence Handler
+  // ============================================================
+
+  /**
+   * Return which agents have connected app clients.
+   * Queries agents from DB, probes each agent DO for connectedClients.
+   * Optional ?uid= filter to scope to a specific user's agents.
+   */
+  private async handlePresence(req: Request): Promise<Response> {
+    const url = new URL(req.url);
+    const uidFilter = url.searchParams.get("uid");
+
+    // List agents from DB
+    const rows = this.sql<{
+      id: string;
+      type: string;
+    }>`SELECT id, type FROM agents ORDER BY created_at DESC`;
+
+    let agents = [...rows];
+
+    // Filter by UID if provided (agent IDs contain the user's UID)
+    if (uidFilter) {
+      agents = agents.filter((a) => a.id.includes(uidFilter));
+    }
+
+    // Probe each agent DO for connectedClients (in parallel)
+    const results = await Promise.all(
+      agents.map(async (agent) => {
+        try {
+          const stub = await getAgentByName(this.exports.HubAgent, agent.id);
+          const resp = await stub.fetch("http://do/state");
+          if (!resp.ok) return null;
+          const state = (await resp.json()) as { connectedClients?: number };
+          return {
+            agentId: agent.id,
+            agentType: agent.type,
+            clients: state.connectedClients ?? 0,
+          };
+        } catch {
+          return null;
+        }
+      })
+    );
+
+    return Response.json({
+      agents: results.filter((r) => r !== null),
     });
   }
 

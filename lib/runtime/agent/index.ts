@@ -393,6 +393,18 @@ export abstract class HubAgent<
       return Response.json({ ok: true });
     }
 
+    if (type === "forceNavigate") {
+      const route = (payload as { route?: string }).route;
+      if (!route || typeof route !== "string") {
+        return Response.json({ ok: false, error: "route is required" }, { status: 400 });
+      }
+      this.broadcast(JSON.stringify({
+        type: "FORCE_NAVIGATE",
+        data: { route },
+      }));
+      return Response.json({ ok: true });
+    }
+
     for (const plugin of this.plugins) {
       if (plugin.actions?.[type]) {
         const result = await plugin.actions[type](this.pluginContext, payload);
@@ -417,6 +429,7 @@ export abstract class HubAgent<
           thread: { id: threadId, request, createdAt, agentType: null, agencyId },
         },
         run: this.runState,
+        connectedClients: 0,
         error: "Agent not yet initialized (missing agentType)",
       });
     }
@@ -442,7 +455,8 @@ export abstract class HubAgent<
         state = { ...state, ...p.state(this.pluginContext) };
       }
     }
-    return Response.json({ state, run: this.runState });
+    const connectedClients = [...this.getConnections()].length;
+    return Response.json({ state, run: this.runState, connectedClients });
   }
 
   getEvents(_req: Request) {

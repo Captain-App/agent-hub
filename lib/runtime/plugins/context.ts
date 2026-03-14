@@ -182,6 +182,29 @@ async function storeMemories(
  * @var CONTEXT_MEMORY_DISK - Optional disk name for extracted memories
  * @var CONTEXT_SUMMARY_MODEL - Optional model for summarization
  */
+/**
+ * Estimate token count for a message using char-length heuristic (~4 chars/token).
+ */
+function estimateTokens(msg: ChatMessage): number {
+  let chars = 0;
+  if ("content" in msg && typeof msg.content === "string") {
+    chars += msg.content.length;
+  }
+  if ("toolCalls" in msg && msg.toolCalls) {
+    for (const tc of msg.toolCalls) {
+      chars += (tc.name?.length ?? 0) + JSON.stringify(tc.args ?? {}).length;
+    }
+  }
+  // Minimum 4 tokens per message for role/overhead
+  return Math.max(4, Math.ceil(chars / 4));
+}
+
+function estimateTotalTokens(messages: ChatMessage[]): number {
+  let total = 0;
+  for (const m of messages) total += estimateTokens(m);
+  return total;
+}
+
 export const context: AgentPlugin = {
   name: "context",
   tags: ["context"],
@@ -196,6 +219,11 @@ export const context: AgentPlugin = {
       name: "CONTEXT_SUMMARIZE_AT",
       required: false,
       description: `Summarize when message count exceeds this (default: ${DEFAULT_CONTEXT_SUMMARIZE_AT})`,
+    },
+    {
+      name: "CONTEXT_MAX_TOKENS",
+      required: false,
+      description: "Summarize when estimated tokens exceed this (default: 0 = disabled)",
     },
     {
       name: "CONTEXT_MEMORY_DISK",
@@ -224,6 +252,7 @@ export const context: AgentPlugin = {
     // Get configuration with defaults
     const KEEP_RECENT = (ctx.agent.vars.CONTEXT_KEEP_RECENT as number) ?? DEFAULT_CONTEXT_KEEP_RECENT;
     const SUMMARIZE_AT = (ctx.agent.vars.CONTEXT_SUMMARIZE_AT as number) ?? DEFAULT_CONTEXT_SUMMARIZE_AT;
+    const MAX_TOKENS = (ctx.agent.vars.CONTEXT_MAX_TOKENS as number) ?? 0;
     const MEMORY_DISK = ctx.agent.vars.CONTEXT_MEMORY_DISK as string | undefined;
     const SUMMARY_MODEL = ctx.agent.vars.CONTEXT_SUMMARY_MODEL as string | undefined;
 
@@ -234,23 +263,27 @@ export const context: AgentPlugin = {
     const totalMessages = store.getMessageCount();
     const checkpointEndSeq = checkpoint?.messagesEndSeq ?? 0;
 
-    // Count messages after the checkpoint
-    const messagesAfterCheckpoint = checkpoint
-      ? store.getMessagesAfter(checkpointEndSeq).length
-      : totalMessages;
+    // Get messages after checkpoint
+    const currentMessages = checkpoint
+      ? store.getMessagesAfter(checkpointEndSeq)
+      : store.getContext(1000);
+    const messagesAfterCheckpoint = currentMessages.length;
 
-    // Check if summarization is needed
-    if (messagesAfterCheckpoint <= SUMMARIZE_AT) {
+    // Check if summarization is needed (by count OR by token estimate)
+    const needsByCount = messagesAfterCheckpoint > SUMMARIZE_AT;
+    const estimatedTokens = MAX_TOKENS > 0 ? estimateTotalTokens(currentMessages) : 0;
+    const needsByTokens = MAX_TOKENS > 0 && estimatedTokens > MAX_TOKENS;
+
+    if (!needsByCount && !needsByTokens) {
       // No summarization needed
       // But if we have a checkpoint, prepend the summary to messages
       if (checkpoint) {
-        const recentMessages = store.getMessagesAfter(checkpointEndSeq);
         plan.setMessages([
           {
             role: "user",
             content: `[Previous Conversation Summary]\n${checkpoint.summary}\n\n---\nContinue from where we left off.`,
           },
-          ...recentMessages.filter((m: ChatMessage) => m.role !== "system"),
+          ...currentMessages.filter((m: ChatMessage) => m.role !== "system"),
         ]);
       }
       return;
@@ -258,11 +291,7 @@ export const context: AgentPlugin = {
 
     // Summarization needed!
     const fs = ctx.agent.fs;
-
-    // Get all messages after checkpoint
-    const allMessages = checkpoint
-      ? store.getMessagesAfter(checkpointEndSeq)
-      : store.getContext(1000);
+    const allMessages = currentMessages;
 
     if (allMessages.length <= KEEP_RECENT) {
       // Not enough messages to summarize

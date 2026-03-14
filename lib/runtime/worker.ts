@@ -481,6 +481,16 @@ const getMetrics = async (req: IRequest, { ctx }: RequestContext) => {
   return agencyStub.fetch(new Request(createDoUrl(req, "/metrics")));
 };
 
+const getPresence = async (req: IRequest, { ctx, env }: RequestContext) => {
+  const notFound = await requireAgency(req.params.agencyId, env);
+  if (notFound) return notFound;
+
+  const agencyStub = await getAgencyStub(req.params.agencyId, ctx);
+  // Forward query string (e.g. ?uid=xxx) to Agency DO
+  const doUrl = createDoUrl(req, "/presence");
+  return agencyStub.fetch(new Request(doUrl));
+};
+
 const handleAgencyWebSocket = async (req: IRequest, { ctx }: RequestContext) => {
   const agencyStub = await getAgencyStub(req.params.agencyId, ctx);
   return agencyStub.fetch(req);
@@ -582,6 +592,9 @@ export const createHandler = (opts: HandlerOptions = {}) => {
 
   // Metrics
   router.get("/agency/:agencyId/metrics", getMetrics);
+
+  // Presence (which agents have connected app clients)
+  router.get("/agency/:agencyId/presence", getPresence);
 
   // Agency WebSocket (for UI event subscriptions)
   router.get("/agency/:agencyId/ws", handleAgencyWebSocket);

@@ -278,6 +278,7 @@ declare abstract class HubAgent<Env extends AgentEnv = AgentEnv> extends Agent<E
     ensureScheduled(): Promise<void>;
     registerThread(req: Request): Promise<Response>;
     invoke(req: Request): Promise<Response>;
+    protected _pluginsInitialized: boolean;
     run(): Promise<void>;
     action(req: Request): Promise<Response>;
     getState(_req: Request): Response;
@@ -442,6 +443,12 @@ declare class Agency extends Agent<AgentEnv> {
     private handleFsGet;
     private handleFsPut;
     private handleFsDelete;
+    /**
+     * Return which agents have connected app clients.
+     * Queries agents from DB, probes each agent DO for connectedClients.
+     * Optional ?uid= filter to scope to a specific user's agents.
+     */
+    private handlePresence;
     /**
      * Get aggregated metrics for this agency.
      * Returns counts and stats computed from local state (schedules, agents).
