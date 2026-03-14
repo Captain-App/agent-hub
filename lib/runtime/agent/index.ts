@@ -311,15 +311,20 @@ export abstract class HubAgent<
         if ("toolCalls" in res.message) toolCalls = res.message.toolCalls;
         if ("content" in res.message) reply = res.message.content;
 
-        // Emit assistant message event so UI can update incrementally
-        this.emit(AgentEventType.CONTENT_MESSAGE, {
-          "gen_ai.content.text": reply || undefined,
-          "gen_ai.content.tool_calls": toolCalls.length > 0 ? toolCalls.map(tc => ({
-            id: tc.id,
-            name: tc.name,
-            arguments: tc.args,
-          })) : undefined,
-        });
+        // Only emit content message when there's actual text to show.
+        // Tool-call-only responses (reply === "") are tracked via
+        // TOOL_START/TOOL_FINISH events; emitting CONTENT_MESSAGE with
+        // undefined text causes empty assistant messages in client history.
+        if (reply) {
+          this.emit(AgentEventType.CONTENT_MESSAGE, {
+            "gen_ai.content.text": reply,
+            "gen_ai.content.tool_calls": toolCalls.length > 0 ? toolCalls.map(tc => ({
+              id: tc.id,
+              name: tc.name,
+              arguments: tc.args,
+            })) : undefined,
+          });
+        }
 
         if (!toolCalls.length) {
           this.runState.status = "completed";
