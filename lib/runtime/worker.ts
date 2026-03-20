@@ -508,8 +508,19 @@ const handleAgentRequest = async (req: IRequest, { ctx }: RequestContext) => {
   const hubAgentStub = await getAgentByName(ctx.exports.HubAgent, req.params.agentId);
   const agentPath = req.params.path || "";
 
-  // WebSocket upgrade
+  // WebSocket upgrade — register agent with Agency for presence discovery
   if (req.headers.get("Upgrade")?.toLowerCase() === "websocket") {
+    try {
+      const agencyStub = await getAgencyStub(req.params.agencyId, ctx);
+      await agencyStub.fetch(new Request("http://do/internal/register-agent", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          agentId: req.params.agentId,
+          agentType: "co2-assistant",
+        }),
+      }));
+    } catch { /* best-effort — don't block upgrade */ }
     return hubAgentStub.fetch(req);
   }
 

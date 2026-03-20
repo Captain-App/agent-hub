@@ -224,6 +224,7 @@ export class Agency extends Agent<AgentEnv> {
     router.get("/metrics", () => this.handleGetMetrics());
 
     // Internal
+    router.post("/internal/register-agent", (req: IRequest) => this.handleRegisterAgent(req));
     router.get("/internal/blueprint/:name", (req: IRequest) => this.handleGetInternalBlueprint(req.params.name));
 
     // 404
@@ -746,6 +747,22 @@ export class Agency extends Agent<AgentEnv> {
     );
 
     return Response.json({ agents });
+  }
+
+  /**
+   * Register an agent in the agents table so presence discovery can find it.
+   * Called by the worker when a client WebSocket connects to a HubAgent DO
+   * that may not have been created through POST /agents.
+   */
+  private async handleRegisterAgent(req: Request): Promise<Response> {
+    const { agentId, agentType } = await req.json<{ agentId: string; agentType?: string }>();
+    if (!agentId) return new Response("agentId required", { status: 400 });
+    this.sql`
+      INSERT INTO agents (id, type, created_at, metadata)
+      VALUES (${agentId}, ${agentType || 'unknown'}, ${Date.now()}, '{}')
+      ON CONFLICT(id) DO NOTHING
+    `;
+    return Response.json({ ok: true });
   }
 
   // ============================================================

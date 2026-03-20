@@ -393,6 +393,12 @@ declare class Agency extends Agent<AgentEnv> {
     private handleCreateBlueprint;
     private handleDeleteBlueprint;
     private handlePresence;
+    /**
+     * Register an agent in the agents table so presence discovery can find it.
+     * Called by the worker when a client WebSocket connects to a HubAgent DO
+     * that may not have been created through POST /agents.
+     */
+    private handleRegisterAgent;
     private handleListAgents;
     private handleCreateAgent;
     private handleDeleteAgent;
