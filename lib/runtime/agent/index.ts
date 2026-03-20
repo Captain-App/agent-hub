@@ -162,6 +162,10 @@ export abstract class HubAgent<
           return new Response(null, { status: 204 });
         }
         return new Response("method not allowed", { status: 405 });
+      case "/connections":
+        return Response.json({
+          connections: [...this.getConnections()].length,
+        });
       default:
         return new Response("not found", { status: 404 });
     }

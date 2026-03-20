@@ -481,6 +481,16 @@ const getMetrics = async (req: IRequest, { ctx }: RequestContext) => {
   return agencyStub.fetch(new Request(createDoUrl(req, "/metrics")));
 };
 
+const getPresence = async (req: IRequest, { ctx, env }: RequestContext) => {
+  const notFound = await requireAgency(req.params.agencyId, env);
+  if (notFound) return notFound;
+  const agencyStub = await getAgencyStub(req.params.agencyId, ctx);
+  const doUrl = new URL(req.url);
+  return agencyStub.fetch(
+    new Request(`http://do/presence${doUrl.search}`)
+  );
+};
+
 const handleAgencyWebSocket = async (req: IRequest, { ctx }: RequestContext) => {
   const agencyStub = await getAgencyStub(req.params.agencyId, ctx);
   return agencyStub.fetch(req);
@@ -549,6 +559,9 @@ export const createHandler = (opts: HandlerOptions = {}) => {
   router.post("/agency/:agencyId/agents", createAgent);
   router.get("/agency/:agencyId/agents/:agentId/tree", getAgentTree);
   router.delete("/agency/:agencyId/agents/:agentId", deleteAgent);
+
+  // Presence
+  router.get("/agency/:agencyId/presence", getPresence);
 
   // Schedules
   router.get("/agency/:agencyId/schedules", listSchedules);

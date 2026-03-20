@@ -217,6 +217,9 @@ export class Agency extends Agent<AgentEnv> {
     router.all("/fs/:path+", (req: IRequest) => this.handleFilesystem(req, req.params.path || ""));
     router.all("/fs", (req: IRequest) => this.handleFilesystem(req, ""));
 
+    // Presence
+    router.get("/presence", (req: IRequest) => this.handlePresence(req));
+
     // Metrics
     router.get("/metrics", () => this.handleGetMetrics());
 
@@ -708,6 +711,41 @@ export class Agency extends Agent<AgentEnv> {
     this.sql`DELETE FROM blueprints WHERE name = ${name}`;
 
     return Response.json({ ok: true });
+  }
+
+  // ============================================================
+  // Presence
+  // ============================================================
+
+  private async handlePresence(req: Request): Promise<Response> {
+    const url = new URL(req.url);
+    const uid = url.searchParams.get("uid");
+
+    const rows = uid
+      ? this.sql<{ id: string; type: string }>`
+          SELECT id, type FROM agents WHERE id LIKE ${"%" + uid + "%"}
+        `
+      : this.sql<{ id: string; type: string }>`
+          SELECT id, type FROM agents
+        `;
+
+    const agents = await Promise.all(
+      rows.map(async (row) => {
+        try {
+          const stub = await getAgentByName(this.exports.HubAgent, row.id);
+          const res = await stub.fetch(new Request("http://do/connections"));
+          if (res.ok) {
+            const data = await res.json<{ connections: number }>();
+            return { agentId: row.id, agentType: row.type, clients: data.connections };
+          }
+        } catch {
+          /* evicted/destroyed DO — skip */
+        }
+        return { agentId: row.id, agentType: row.type, clients: 0 };
+      })
+    );
+
+    return Response.json({ agents });
   }
 
   // ============================================================
