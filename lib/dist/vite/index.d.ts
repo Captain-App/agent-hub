@@ -99,6 +99,15 @@ interface AgentsPluginOptions {
      */
     cloudflare?: CloudflareConfig | null;
     /**
+     * Enable Sentry integration.
+     * When true, wraps the Worker handler with `withSentry()` and
+     * Durable Objects with `instrumentDurableObjectWithSentry()`.
+     * Requires `@sentry/cloudflare` as a dependency and `SENTRY_DSN`
+     * as a Worker secret.
+     * @default false
+     */
+    sentry?: boolean;
+    /**
      * R2 bucket name for agent filesystem storage.
      * @default "agents-hub-fs"
      */
