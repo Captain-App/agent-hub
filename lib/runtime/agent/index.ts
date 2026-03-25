@@ -222,6 +222,54 @@ export abstract class HubAgent<
         Object.assign(this.vars, body.vars);
       }
 
+      // Merge attachments into the last user message as multimodal content blocks
+      if (body.attachments?.length && body.messages?.length) {
+        const lastMsg = body.messages[body.messages.length - 1];
+        if (lastMsg.role === "user") {
+          const blocks: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
+
+          // Preserve existing text content
+          const existing = lastMsg.content;
+          if (typeof existing === "string" && existing) {
+            blocks.push({ type: "text", text: existing });
+          } else if (Array.isArray(existing)) {
+            blocks.push(...existing);
+          }
+
+          // Add attachment blocks
+          for (const att of body.attachments) {
+            if (att.mimeType.startsWith("image/")) {
+              blocks.push({
+                type: "image_url",
+                image_url: { url: `data:${att.mimeType};base64,${att.data}` },
+              });
+            } else if (att.mimeType === "application/pdf") {
+              // PDFs: include as data URI (OpenRouter/Anthropic supports PDF vision)
+              blocks.push({
+                type: "image_url",
+                image_url: { url: `data:${att.mimeType};base64,${att.data}` },
+              });
+            } else {
+              // Text-based files (CSV, TXT): decode and include as text
+              try {
+                const text = atob(att.data);
+                blocks.push({
+                  type: "text",
+                  text: `[File: ${att.filename}]\n${text}`,
+                });
+              } catch {
+                blocks.push({
+                  type: "text",
+                  text: `[Attached: ${att.filename} (${att.mimeType})]`,
+                });
+              }
+            }
+          }
+
+          (lastMsg as any).content = blocks;
+        }
+      }
+
       if (body.messages?.length) this.store.add(body.messages);
 
       if (body.files && typeof body.files === "object") {

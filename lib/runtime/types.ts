@@ -58,20 +58,35 @@ export type ChatMessageBase = {
   ts?: string;
 };
 
+/** A block of content within a multimodal message. */
+export type ContentBlock =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string; detail?: string } };
+
 /** A single message in the conversation (user, assistant, system, or tool result). */
 export type ChatMessage = ChatMessageBase &
   (
-    | { role: "system" | "user"; content: string }
+    | { role: "system" | "user"; content: string | ContentBlock[] }
     | { role: "assistant"; reasoning?: string; content: string }
     | { role: "assistant"; reasoning?: string; toolCalls: ToolCall[] }
     | { role: "tool"; content: string; toolCallId: string }
   );
+
+/** A file attachment sent with an invoke request. */
+export interface Attachment {
+  filename: string;
+  mimeType: string;
+  /** Base64-encoded file content. */
+  data: string;
+}
 
 /** Request body for the `/invoke` endpoint. */
 export interface InvokeBody {
   threadId?: string;
   messages?: ChatMessage[];
   files?: Record<string, string>;
+  /** File attachments to merge into the last user message as multimodal content blocks. */
+  attachments?: Attachment[];
   idempotencyKey?: string;
   agentType?: string;
   tags?: string[];

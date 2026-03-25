@@ -4,7 +4,7 @@ import { type Provider, parseModel } from ".";
 type OAChatMsg =
   | {
       role: "system" | "user" | "assistant" | "tool";
-      content: string;
+      content: string | Array<Record<string, unknown>>;
       name?: string;
       tool_call_id?: string;
       reasoning?: string;
@@ -62,7 +62,13 @@ function toOA(req: ModelRequest) {
         }))
       });
     } else if ("content" in m) {
-      msgs.push({ role: m.role, content: m.content ?? "" });
+      // Pass through array content blocks (multimodal) or string content
+      const content = m.content;
+      if (Array.isArray(content)) {
+        msgs.push({ role: m.role, content });
+      } else {
+        msgs.push({ role: m.role, content: content ?? "" });
+      }
     }
   }
 
