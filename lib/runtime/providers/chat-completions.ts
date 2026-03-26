@@ -117,7 +117,9 @@ function fromOA(choice: { message: OAChatMsg }): ChatMessage {
       }))
     };
   }
-  return { role: "assistant", reasoning: msg?.reasoning, content: msg?.content ?? "" };
+  const raw = msg?.content ?? "";
+  const content = typeof raw === "string" ? raw : raw.filter((b): b is { text: string } => typeof (b as any).text === "string").map(b => b.text).join("");
+  return { role: "assistant", reasoning: msg?.reasoning, content };
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {

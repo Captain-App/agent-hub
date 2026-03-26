@@ -361,7 +361,10 @@ export abstract class HubAgent<
         let reply = "";
 
         if ("toolCalls" in res.message) toolCalls = res.message.toolCalls;
-        if ("content" in res.message) reply = res.message.content;
+        if ("content" in res.message) {
+          const content = res.message.content;
+          reply = typeof content === "string" ? content : content.filter(b => b.type === "text").map(b => b.text).join("");
+        }
 
         // Only emit content message when there's actual text to show.
         // Tool-call-only responses (reply === "") are tracked via
