@@ -287,6 +287,10 @@ export abstract class HubAgent<
           runState.status
         )
       ) {
+        // Clear any stale pending tool calls before restarting. If a previous
+        // run errored out before executePendingTools could clear the list, the
+        // next alarm would immediately fail again (death spiral).
+        this.info.pendingToolCalls = [];
         runState.status = "running";
         // Connect to Agency WebSocket for event relay during the run
         await this.connectToAgency();
@@ -416,6 +420,10 @@ export abstract class HubAgent<
 
       await this.scheduleStep();
     } catch (error: unknown) {
+      // Clear pending tool calls to prevent death spiral: if run() fails while
+      // pendingToolCalls is non-empty, the next invoke() would reschedule and
+      // fail again immediately, looping forever.
+      this.info.pendingToolCalls = [];
       this.runState.status = "error";
       this.runState.reason = String(
         error instanceof Error ? error.message : error

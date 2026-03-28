@@ -308,6 +308,126 @@ describe("Agent Loop Integration", () => {
       // Assert
       expect(result.run.status).toBe("error");
     });
+
+    it("should recover from error state on subsequent invoke (no death spiral)", async () => {
+      // Regression test: CO2-803 — agent entered unrecoverable "death spiral" after a
+      // single run() failure.  Fix: pendingToolCalls is now cleared in both the outer
+      // catch block and in invoke() when resetting from a non-running status.
+      //
+      // Verify: an agent that errors on the first invocation can be successfully
+      // invoked again and complete normally.
+      let callCount = 0;
+      testProvider.onRequest(() => {
+        callCount++;
+        if (callCount === 1) throw new Error("Simulated transient LLM failure");
+        return "Recovery successful!";
+      });
+
+      const { agentStub } = await spawnAgent("death-spiral-recovery");
+
+      // First invoke — triggers run() outer catch (model throws)
+      await agentStub.fetch(
+        new Request("http://do/invoke", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            messages: [{ role: "user", content: "First attempt" }],
+          }),
+        })
+      );
+
+      const errorState = await waitForStatus(agentStub, "error");
+      expect(errorState.run.status).toBe("error");
+
+      // Second invoke — must NOT immediately error again (no death spiral)
+      await agentStub.fetch(
+        new Request("http://do/invoke", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            messages: [{ role: "user", content: "Try again please" }],
+          }),
+        })
+      );
+
+      const finalState = await waitForStatus(agentStub, "completed", 10000);
+      expect(finalState.run.status).toBe("completed");
+      // Model was called twice: once (throwing) on first invoke, once on recovery
+      expect(callCount).toBe(2);
+    });
+
+    it("should clear stale pending tool calls when re-invoking after HITL cancel", async () => {
+      // Regression test: CO2-803 — if pendingToolCalls was non-empty when run() failed
+      // (e.g. HITL pause followed by cancel), stale tool calls should not be re-executed
+      // on the next invoke().  Fix: invoke() clears pendingToolCalls before rescheduling.
+      //
+      // Scenario:
+      //   1. Model returns tool call → HITL pauses agent (pendingToolCalls set, not cleared)
+      //   2. User cancels instead of approving (status = "canceled", pendingToolCalls still set)
+      //   3. User invokes again → stale pendingToolCalls MUST be cleared
+      //   4. Model is called fresh and completes normally
+      let callCount = 0;
+      testProvider.onRequest(() => {
+        callCount++;
+        if (callCount === 1) {
+          // Return an echo tool call — HITL will intercept and pause
+          return { toolCalls: [{ id: "stale_1", name: "echo", args: { message: "stale" } }] };
+        }
+        // Fresh response after recovery: only called if model is invoked (not stale tool exec)
+        return "Fresh start!";
+      });
+
+      const { agentStub } = await spawnAgent("death-spiral-hitl-cancel");
+
+      // First invoke with HITL enabled for the echo tool
+      await agentStub.fetch(
+        new Request("http://do/invoke", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            messages: [{ role: "user", content: "Echo stale message" }],
+            vars: { HITL_TOOLS: ["echo"] },
+          }),
+        })
+      );
+
+      // Wait for HITL pause — agent has pendingToolCalls=[stale_1], status="paused"
+      const pausedState = await waitForStatus(agentStub, "paused");
+      expect(pausedState.run.status).toBe("paused");
+
+      // Cancel instead of approving — status becomes "canceled", pendingToolCalls still set
+      const cancelRes = await agentStub.fetch(
+        new Request("http://do/action", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ type: "cancel" }),
+        })
+      );
+      expect(cancelRes.ok).toBe(true);
+
+      await waitForStatus(agentStub, "canceled");
+
+      // Second invoke — invoke() should clear pendingToolCalls before restarting
+      await agentStub.fetch(
+        new Request("http://do/invoke", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            messages: [{ role: "user", content: "Start fresh" }],
+          }),
+        })
+      );
+
+      const finalState = await waitForStatus(agentStub, "completed", 10000);
+      expect(finalState.run.status).toBe("completed");
+
+      // callCount should be exactly 2:
+      //   1 = initial HITL-causing call
+      //   2 = fresh model call on recovery
+      // If pendingToolCalls was NOT cleared, the stale echo call would be re-executed
+      // and the model would be called a 3rd time to handle the tool result.
+      expect(callCount).toBe(2);
+    });
   });
 
   describe("Cancellation", () => {
