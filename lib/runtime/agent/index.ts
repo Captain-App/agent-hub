@@ -99,7 +99,8 @@ export abstract class HubAgent<
   }
 
   get model(): string {
-    const model = this.blueprint.model ?? (this.vars.DEFAULT_MODEL as string);
+    // Vars override allows benchmarks/evals to swap models without changing blueprints.
+    const model = (this.vars.DEFAULT_MODEL as string) || this.blueprint.model;
 
     if (!model)
       throw new Error(
