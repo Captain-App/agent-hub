@@ -4,6 +4,7 @@ import type { AgentBlueprint, CfCtx, ThreadRequestContext } from "./types";
 import type { R2Bucket } from "@cloudflare/workers-types";
 import type { HubAgent } from "./agent";
 import type { Agency } from "./agency";
+import { getAdminHtml } from "./admin-ui";
 
 export type PluginInfo = {
   name: string;
@@ -617,6 +618,11 @@ export const createHandler = (opts: HandlerOptions = {}) => {
   // MCP OAuth callbacks
   router.get("/oauth/agency/:agencyId/callback", handleMcpOAuthCallback);
 
+  // Admin UI — served from ADMIN_HTML constant (see admin-ui.ts)
+  router.get("/admin", () => new Response(ADMIN_HTML, {
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  }));
+
   // 404
   router.all("*", () => new Response("Not found", { status: 404 }));
 
@@ -632,9 +638,10 @@ export const createHandler = (opts: HandlerOptions = {}) => {
       // Auth check (skip for OAuth callbacks which come from browser redirects)
       // OAuth callback pattern: /oauth/agency/{agencyId}/callback with state param
       const isOAuthCallback = /^\/oauth\/agency\/[^/]+\/callback$/.test(url.pathname) && url.searchParams.has("state");
+      const isAdminPage = url.pathname === "/admin";
       const providedSecret = req.headers.get("X-SECRET") || url.searchParams.get("key");
       const secret = process.env.SECRET;
-      if (secret && !secureCompare(providedSecret, secret) && !isOAuthCallback) {
+      if (secret && !secureCompare(providedSecret, secret) && !isOAuthCallback && !isAdminPage) {
         if (req.headers.get("Upgrade")?.toLowerCase() === "websocket") {
           return withCors(new Response("Unauthorized", { status: 401 }));
         }
