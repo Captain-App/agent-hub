@@ -386,6 +386,23 @@ export abstract class HubAgent<
           });
         }
 
+        // If the model was truncated (finish_reason: "length"), inject a
+        // continuation prompt and re-enter the loop instead of completing.
+        const finishReason = (res as any).finishReason as string | undefined;
+        if (!toolCalls.length && finishReason === "length") {
+          const continuations = (this.info as any)._continuationCount ?? 0;
+          if (continuations < 2) {
+            (this.info as any)._continuationCount = continuations + 1;
+            this.store.add({
+              role: "user",
+              content: "[System: Your response was truncated. Continue from where you left off.]",
+            });
+            await this.scheduleStep();
+            return;
+          }
+          // Max 2 continuations — fall through to completed
+        }
+
         if (!toolCalls.length) {
           this.runState.status = "completed";
 

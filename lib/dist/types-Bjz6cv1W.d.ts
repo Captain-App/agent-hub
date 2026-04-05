@@ -532,7 +532,7 @@ interface ModelRequest {
     messages: ChatMessage[];
     tools?: string[];
     toolDefs?: ToolMeta[];
-    toolChoice?: "auto" | {
+    toolChoice?: "auto" | "required" | "none" | {
         type: "function";
         function: {
             name: string;

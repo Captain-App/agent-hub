@@ -21,10 +21,15 @@ type IDZFile = {
 
 const SUMMARIZATION_SYSTEM_PROMPT = `You are summarizing a conversation to preserve context while reducing length.
 
-Create a concise summary that captures:
-- Key decisions made
-- Important information learned about the user or task
-- Tasks completed and their outcomes
+CRITICAL: Preserve ALL entity names, IDs, and counts exactly as they appear.
+Do NOT abbreviate lists — if the conversation mentioned 3 sites (Main Office, Storage, Plant Room),
+write all three names. If an entity has an ID (site-123, taxonomy-456), include the ID.
+
+Create a summary that captures:
+- Exact entity names and IDs mentioned (sites, buildings, estates, assets, taxonomies, catalogues)
+- Key decisions made and actions taken (with exact action names and parameters)
+- The current page/route and what the user was doing
+- Tasks completed and their outcomes (with specific results, not vague descriptions)
 - Pending items or ongoing context
 
 If there are important facts worth remembering long-term (user preferences, names, key facts learned), output them in a special section:
@@ -35,7 +40,7 @@ If there are important facts worth remembering long-term (user preferences, name
 - Project deadline is January 15th
 </memories>
 
-Keep the summary focused and actionable. The agent will continue the conversation with only this summary as history.
+Keep the summary factual and specific. The agent will continue the conversation with only this summary as history.
 Do NOT include the <memories> section if there are no new facts worth remembering.`;
 
 function buildSummaryPrompt(

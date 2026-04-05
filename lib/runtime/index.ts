@@ -7,4 +7,5 @@ export * from "./hub";
 export * from "./tools";
 export * from "./fs";
 export * from "./config";
+export { ModelPlanBuilder } from "./plan";
 export * as plugins from "./plugins";

@@ -230,17 +230,19 @@ export function makeChatCompletions(
           }
 
           const json = (await res.json()) as {
-            choices: Array<{ message: OAChatMsg }>;
+            choices: Array<{ message: OAChatMsg; finish_reason?: string }>;
             usage: { prompt_tokens: number; completion_tokens: number };
           };
-          const message = fromOA(json.choices?.[0]);
+          const choice = json.choices?.[0];
+          const message = fromOA(choice);
           const usage = json.usage
             ? {
                 promptTokens: json.usage.prompt_tokens,
                 completionTokens: json.usage.completion_tokens
               }
             : undefined;
-          return { message, usage };
+          const finishReason = choice?.finish_reason;
+          return { message, usage, finishReason };
         } catch (error) {
           if (signal?.aborted || isAbortError(error)) {
             throw error;

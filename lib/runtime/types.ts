@@ -100,7 +100,7 @@ export interface ModelRequest {
   messages: ChatMessage[];
   tools?: string[];
   toolDefs?: ToolMeta[];
-  toolChoice?: "auto" | { type: "function"; function: { name: string } };
+  toolChoice?: "auto" | "required" | "none" | { type: "function"; function: { name: string } };
   responseFormat?: "text" | "json" | { schema: unknown };
   temperature?: number;
   maxTokens?: number;
