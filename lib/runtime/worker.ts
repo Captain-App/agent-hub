@@ -850,10 +850,15 @@ export const createHandler = (opts: HandlerOptions = {}) => {
       "INSERT INTO nightly_backups (backup_date, started_at, status) VALUES (?, ?, 'running') ON CONFLICT(backup_date) DO UPDATE SET started_at = excluded.started_at, status = 'running'"
     ).bind(today, Date.now()).run();
 
-    // Get all agents with snapshots (from conversation_snapshots — these have R2 data)
+    // Incremental: only copy snapshots that changed since the last completed backup
+    const { results: lastBackup } = await db.prepare(
+      "SELECT completed_at FROM nightly_backups WHERE status = 'completed' AND backup_date < ? ORDER BY backup_date DESC LIMIT 1"
+    ).bind(today).all();
+    const since = (lastBackup[0] as any)?.completed_at || 0;
+
     const { results: snapshots } = await db.prepare(
-      "SELECT agent_id, agency_id, r2_path, size_bytes FROM conversation_snapshots ORDER BY snapshot_at DESC"
-    ).all();
+      "SELECT agent_id, agency_id, r2_path, size_bytes FROM conversation_snapshots WHERE snapshot_at > ? ORDER BY snapshot_at DESC"
+    ).bind(since).all();
 
     let backed = 0;
     let totalSize = 0;
@@ -1155,9 +1160,15 @@ Rules:
           "INSERT INTO nightly_backups (backup_date, started_at, status) VALUES (?, ?, 'running') ON CONFLICT(backup_date) DO UPDATE SET started_at = excluded.started_at, status = 'running'"
         ).bind(today, Date.now()).run();
 
+        // Incremental: only snapshots changed since last backup
+        const { results: lastBackup } = await db.prepare(
+          "SELECT completed_at FROM nightly_backups WHERE status = 'completed' AND backup_date < ? ORDER BY backup_date DESC LIMIT 1"
+        ).bind(today).all();
+        const since = (lastBackup[0] as any)?.completed_at || 0;
+
         const { results: snapshots } = await db.prepare(
-          "SELECT agent_id, agency_id, r2_path, size_bytes FROM conversation_snapshots ORDER BY snapshot_at DESC"
-        ).all();
+          "SELECT agent_id, agency_id, r2_path, size_bytes FROM conversation_snapshots WHERE snapshot_at > ? ORDER BY snapshot_at DESC"
+        ).bind(since).all();
 
         let backed = 0;
         let totalSize = 0;
