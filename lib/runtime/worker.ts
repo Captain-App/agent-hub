@@ -1071,9 +1071,24 @@ Rules:
     }
   });
 
-  router.get("/admin", () => new Response(getAdminHtml(), {
-    headers: { "Content-Type": "text/html; charset=utf-8" },
-  }));
+  router.get("/admin", (req: IRequest) => {
+    const url = new URL(req.url);
+    // Allow ?inline=1 to serve the legacy inline HTML as a fallback
+    if (url.searchParams.get("inline") === "1") {
+      return new Response(getAdminHtml(), {
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      });
+    }
+    // Redirect to the Cloudflare Pages admin dashboard
+    const isDev = url.hostname.includes("dev.");
+    const pagesUrl = isDev
+      ? "https://dev.agent-hub.co2targettracking.co.uk"
+      : "https://agent-hub.co2targettracking.co.uk";
+    // Forward the ?key= param if present (legacy auth)
+    const key = url.searchParams.get("key");
+    const redirectUrl = key ? `${pagesUrl}?hub=${url.origin}&key=${key}` : `${pagesUrl}?hub=${url.origin}`;
+    return Response.redirect(redirectUrl, 302);
+  });
 
   // 404
   router.all("*", () => new Response("Not found", { status: 404 }));
