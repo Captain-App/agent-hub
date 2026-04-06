@@ -104,7 +104,7 @@ export function getAdminHtml(): string {
     <h1>Agent Hub <span>Admin</span></h1>
     <div class="sidebar-section">
       <label>Agency</label>
-      <select id="agencySelect" onchange="onAgencyChange()"><option value="">Loading...</option></select>
+      <select id="agencySelect" onchange="onAgencyChange()"><option value="">Sign in first</option></select>
     </div>
     <div class="sidebar-section">
       <label>Agent</label>
@@ -129,28 +129,33 @@ export function getAdminHtml(): string {
     </div>
   </div>
   <div class="main" id="mainContent">
-    <div class="empty">Select an agency and agent to begin.</div>
+    <div class="empty"><div class="spinner"></div> Connecting...</div>
   </div>
 </div>
 
 <script>
 // --- Firebase config (detected from URL: dev vs prod) ---
-const FIREBASE_CONFIGS = {
-  dev: {
-    apiKey: 'AIzaSyBbta_ee3DWNg2Vt81zVJKrmAsOnZTdCt0',
-    authDomain: 'co2-target-asset-tracking-dev.firebaseapp.com',
-    projectId: 'co2-target-asset-tracking-dev',
-  },
-  prod: {
-    apiKey: 'AIzaSyDrGUku6S-PkwZ39_4q00-HnmrsEelwSW8',
-    authDomain: 'co2-target-asset-tracking.firebaseapp.com',
-    projectId: 'co2-target-asset-tracking',
-  },
-};
-const isDev = location.hostname.includes('dev.');
-const fbConfig = isDev ? FIREBASE_CONFIGS.dev : FIREBASE_CONFIGS.prod;
-firebase.initializeApp(fbConfig);
-const auth = firebase.auth();
+var auth = null;
+try {
+  var FIREBASE_CONFIGS = {
+    dev: {
+      apiKey: 'AIzaSyBbta_ee3DWNg2Vt81zVJKrmAsOnZTdCt0',
+      authDomain: 'co2-target-asset-tracking-dev.firebaseapp.com',
+      projectId: 'co2-target-asset-tracking-dev',
+    },
+    prod: {
+      apiKey: 'AIzaSyDrGUku6S-PkwZ39_4q00-HnmrsEelwSW8',
+      authDomain: 'co2-target-asset-tracking.firebaseapp.com',
+      projectId: 'co2-target-asset-tracking',
+    },
+  };
+  var isDev = location.hostname.includes('dev.');
+  var fbConfig = isDev ? FIREBASE_CONFIGS.dev : FIREBASE_CONFIGS.prod;
+  firebase.initializeApp(fbConfig);
+  auth = firebase.auth();
+} catch(e) {
+  console.error('Firebase init failed:', e);
+}
 
 const BASE = location.origin;
 let idToken = '';
@@ -216,6 +221,7 @@ async function doSignIn() {
   var errEl = document.getElementById('authError');
   if (errEl) errEl.style.display = 'none';
   try {
+    if (!auth) throw new Error('Firebase not available. Use ?key=YOUR_SECRET instead.');
     await auth.signInWithEmailAndPassword(email, pass);
     // onAuthStateChanged will handle the rest
   } catch (e) {
@@ -225,36 +231,42 @@ async function doSignIn() {
 }
 
 function doSignOut() {
-  auth.signOut();
+  if (auth) auth.signOut();
+  else { currentUser = null; idToken = ''; showSignIn(); }
 }
 
 // Firebase auth state listener
-auth.onAuthStateChanged(async function(user) {
-  if (user) {
-    currentUser = user;
-    idToken = await user.getIdToken();
-    setStatus('green', user.email);
-    init();
-  } else {
-    currentUser = null;
-    idToken = '';
-    setStatus('yellow', 'Not signed in');
-    // Check for legacy ?key= param
-    var keyParam = new URLSearchParams(location.search).get('key');
-    if (keyParam) {
-      init(); // legacy key-based auth
+if (auth) {
+  auth.onAuthStateChanged(async function(user) {
+    if (user) {
+      currentUser = user;
+      idToken = await user.getIdToken();
+      setStatus('green', user.email);
+      init();
     } else {
-      showSignIn();
+      currentUser = null;
+      idToken = '';
+      setStatus('yellow', 'Not signed in');
+      var keyParam = new URLSearchParams(location.search).get('key');
+      if (keyParam) {
+        init();
+      } else {
+        showSignIn();
+      }
     }
-  }
-});
+  });
+} else {
+  // Firebase failed to load — fall back immediately
+  showSignIn();
+}
 
 async function init() {
   try {
-    const agencies = await api('GET', '/agencies');
+    const agenciesRes = await api('GET', '/agencies');
+    const agencies = Array.isArray(agenciesRes) ? agenciesRes : (agenciesRes.agencies || []);
     const sel = document.getElementById('agencySelect');
     sel.innerHTML = '<option value="">Select agency...</option>';
-    (agencies || []).forEach(a => {
+    agencies.forEach(a => {
       const opt = document.createElement('option');
       opt.value = a.id || a.name || a;
       opt.textContent = a.name || a.id || a;
@@ -278,10 +290,11 @@ async function onAgencyChange() {
   currentAgent = '';
   if (!currentAgency) return;
   try {
-    const agents = await api('GET', '/agency/' + currentAgency + '/agents');
+    const agentsRes = await api('GET', '/agency/' + currentAgency + '/agents');
+    const agentList = Array.isArray(agentsRes) ? agentsRes : (agentsRes.agents || []);
     const sel = document.getElementById('agentSelect');
     sel.innerHTML = '<option value="">Select agent...</option>';
-    (agents || []).forEach(a => {
+    agentList.forEach(a => {
       const opt = document.createElement('option');
       opt.value = a.id || a.name || a;
       opt.textContent = (a.name || a.id || a) + (a.agentType ? ' (' + a.agentType + ')' : '');
@@ -532,7 +545,7 @@ async function loadInspector() {
       const resultStr = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
       const isTruncated = resultStr && resultStr.length > 500;
 
-      html += '<div class="tool-call" onclick="this.classList.toggle(\\'expanded\\')">';
+      html += '<div class="tool-call" onclick="this.classList.toggle(&apos;expanded&apos;)">';
       html += '<div class="tool-call-header">';
       html += '<span><span class="badge badge-blue">' + esc(name) + '</span> <span class="mono" style="color:var(--text2);font-size:11px">#' + (i+1) + '</span></span>';
       html += '<span style="color:var(--text2);font-size:11px">' + (result !== undefined ? (typeof result === 'string' && result.includes('error') ? '<span class="badge badge-red">error</span>' : '<span class="badge badge-green">ok</span>') : '<span class="badge badge-yellow">pending</span>') + '</span>';
@@ -714,7 +727,7 @@ async function viewRun(id) {
   if (data.toolCalls && data.toolCalls.length > 0) {
     html += '<div class="panel-body"><strong style="font-size:11px;color:var(--text2);text-transform:uppercase">Tool Calls</strong>';
     data.toolCalls.forEach(function(tc, i) {
-      html += '<div class="tool-call" onclick="this.classList.toggle(\'expanded\')">';
+      html += '<div class="tool-call" onclick="this.classList.toggle(&apos;expanded&apos;)">';
       html += '<div class="tool-call-header"><span><span class="badge badge-blue">' + esc(tc.name) + '</span> <span class="mono" style="color:var(--text2);font-size:11px">#' + (i+1) + '</span></span></div>';
       html += '<div class="tool-call-body"><div class="json-view">' + esc(formatJson(tc.args || '{}')) + '</div></div>';
       html += '</div>';
@@ -758,8 +771,15 @@ async function loadState() {
   main.innerHTML = html;
 }
 
-// Boot
-init();
+// Boot — Firebase onAuthStateChanged handles init.
+// Fallback: if Firebase doesn't fire within 3s (e.g. blocked by ad-blocker),
+// show sign-in or try legacy key auth.
+setTimeout(function() {
+  if (!currentUser && !document.getElementById('emailInput')) {
+    var keyParam = new URLSearchParams(location.search).get('key');
+    if (keyParam) { init(); } else { showSignIn(); }
+  }
+}, 3000);
 </script>
 </body>
 </html>`;

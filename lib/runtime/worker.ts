@@ -79,7 +79,7 @@ const FIREBASE_PROJECTS = [
   "co2-target-asset-tracking",
   "co2-target-asset-tracking-dev",
 ];
-const GOOGLE_CERTS_URL = "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com";
+const GOOGLE_JWKS_URL = "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com";
 
 let cachedCerts: { keys: Record<string, CryptoKey>; expiresAt: number } | null = null;
 
@@ -87,39 +87,34 @@ async function fetchGoogleCerts(): Promise<Record<string, CryptoKey>> {
   if (cachedCerts && Date.now() < cachedCerts.expiresAt) {
     return cachedCerts.keys;
   }
-  const res = await fetch(GOOGLE_CERTS_URL);
+  const res = await fetch(GOOGLE_JWKS_URL);
   if (!res.ok) return {};
-  const certs = await res.json() as Record<string, string>;
+  const jwks = await res.json() as { keys: Array<{ kid: string; kty: string; n: string; e: string; alg: string }> };
 
-  // Parse Cache-Control max-age for TTL
   const cc = res.headers.get("Cache-Control") || "";
   const maxAge = parseInt(cc.match(/max-age=(\d+)/)?.[1] || "3600", 10);
 
   const keys: Record<string, CryptoKey> = {};
-  for (const [kid, pem] of Object.entries(certs)) {
+  for (const jwk of jwks.keys || []) {
     try {
-      const der = pemToDer(pem);
-      keys[kid] = await crypto.subtle.importKey(
-        "spki", der, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]
+      keys[jwk.kid] = await crypto.subtle.importKey(
+        "jwk",
+        { kty: jwk.kty, n: jwk.n, e: jwk.e, alg: "RS256", ext: true },
+        { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+        false,
+        ["verify"]
       );
-    } catch { /* skip invalid certs */ }
+    } catch { /* skip invalid keys */ }
   }
 
   cachedCerts = { keys, expiresAt: Date.now() + maxAge * 1000 };
   return keys;
 }
 
-function pemToDer(pem: string): ArrayBuffer {
-  const b64 = pem.replace(/-----[A-Z ]+-----/g, "").replace(/\s/g, "");
-  const binary = atob(b64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes.buffer;
-}
-
 function decodeJwtPart(part: string): Record<string, unknown> {
-  const padded = part.replace(/-/g, "+").replace(/_/g, "/");
-  return JSON.parse(atob(padded));
+  let b64 = part.replace(/-/g, "+").replace(/_/g, "/");
+  while (b64.length % 4) b64 += "=";
+  return JSON.parse(atob(b64));
 }
 
 async function verifyFirebaseToken(token: string): Promise<boolean> {
@@ -152,8 +147,10 @@ async function verifyFirebaseToken(token: string): Promise<boolean> {
     const key = header.kid ? certs[header.kid] : undefined;
     if (!key) return false;
 
+    let sigB64 = parts[2].replace(/-/g, "+").replace(/_/g, "/");
+    while (sigB64.length % 4) sigB64 += "=";
     const signatureBytes = Uint8Array.from(
-      atob(parts[2].replace(/-/g, "+").replace(/_/g, "/")),
+      atob(sigB64),
       (c) => c.charCodeAt(0)
     );
     const dataBytes = new TextEncoder().encode(parts[0] + "." + parts[1]);
@@ -712,6 +709,57 @@ export const createHandler = (opts: HandlerOptions = {}) => {
   router.get("/oauth/agency/:agencyId/callback", handleMcpOAuthCallback);
 
   // Admin UI — served from ADMIN_HTML constant (see admin-ui.ts)
+  // Debug endpoint — verify a Firebase token and return diagnostics
+  router.get("/admin/debug-token", async (req: IRequest) => {
+    const authHeader = req.headers.get("Authorization") || "";
+    if (!authHeader.startsWith("Bearer ")) {
+      return Response.json({ error: "No Bearer token", headers: Object.fromEntries(req.headers.entries()) });
+    }
+    const token = authHeader.slice(7);
+    const parts = token.split(".");
+    if (parts.length !== 3) return Response.json({ error: "Not 3 parts", partCount: parts.length });
+
+    try {
+      const header = decodeJwtPart(parts[0]);
+      const payload = decodeJwtPart(parts[1]);
+      const project = FIREBASE_PROJECTS.find(
+        (p) => payload.iss === `https://securetoken.google.com/${p}` && payload.aud === p
+      );
+      const now = Math.floor(Date.now() / 1000);
+      const certs = await fetchGoogleCerts();
+      const key = header.kid ? certs[header.kid as string] : undefined;
+
+      let sigValid = false;
+      if (key) {
+        let sigB64 = parts[2].replace(/-/g, "+").replace(/_/g, "/");
+        while (sigB64.length % 4) sigB64 += "=";
+        const sigBytes = Uint8Array.from(atob(sigB64), (c) => c.charCodeAt(0));
+        const dataBytes = new TextEncoder().encode(parts[0] + "." + parts[1]);
+        sigValid = await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, sigBytes, dataBytes);
+      }
+
+      return Response.json({
+        header,
+        issuer: payload.iss,
+        audience: payload.aud,
+        subject: payload.sub,
+        email: (payload as any).email,
+        exp: payload.exp,
+        iat: payload.iat,
+        now,
+        expired: payload.exp ? payload.exp < now - 300 : "no exp",
+        projectMatch: project || null,
+        kidMatch: !!key,
+        certCount: Object.keys(certs).length,
+        availableKids: Object.keys(certs),
+        signatureValid: sigValid,
+        wouldAuth: !!(project && sigValid && payload.exp && payload.exp >= now - 300),
+      });
+    } catch (e: any) {
+      return Response.json({ error: e.message, stack: e.stack });
+    }
+  });
+
   router.get("/admin", () => new Response(ADMIN_HTML, {
     headers: { "Content-Type": "text/html; charset=utf-8" },
   }));
@@ -733,7 +781,7 @@ export const createHandler = (opts: HandlerOptions = {}) => {
       // 2. Authorization: Bearer <firebase-id-token> (user sign-in from admin UI)
       // Skip for OAuth callbacks and the /admin page itself (serves static HTML)
       const isOAuthCallback = /^\/oauth\/agency\/[^/]+\/callback$/.test(url.pathname) && url.searchParams.has("state");
-      const isAdminPage = url.pathname === "/admin";
+      const isAdminPage = url.pathname.startsWith("/admin");
       const providedSecret = req.headers.get("X-SECRET") || url.searchParams.get("key");
       const secret = process.env.SECRET;
 
