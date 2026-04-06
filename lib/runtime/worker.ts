@@ -727,7 +727,8 @@ export const createHandler = (opts: HandlerOptions = {}) => {
         SUM(message_count) as total_messages,
         SUM(memory_count) as total_memories,
         SUM(run_count) as total_runs,
-        COUNT(CASE WHEN last_active_at > ? THEN 1 END) as active_24h
+        COUNT(CASE WHEN last_active_at > ? THEN 1 END) as active_24h,
+        MAX(last_active_at) as latest_active_at
       FROM agent_activity
     `).bind(Date.now() - 86400000).all();
     return Response.json(results[0] || {});

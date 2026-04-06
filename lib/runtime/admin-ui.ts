@@ -372,7 +372,7 @@ async function loadDiscover() {
     html += '<div style="padding:12px;background:var(--bg2);border:1px solid var(--border);border-radius:4px"><div style="font-size:11px;color:var(--text2)">Active (24h)</div><div style="font-size:24px;font-weight:600">' + (statsRes.active_24h || 0) + '</div></div>';
     html += '<div style="padding:12px;background:var(--bg2);border:1px solid var(--border);border-radius:4px"><div style="font-size:11px;color:var(--text2)">Messages</div><div style="font-size:24px;font-weight:600">' + (statsRes.total_messages || 0).toLocaleString() + '</div></div>';
     html += '<div style="padding:12px;background:var(--bg2);border:1px solid var(--border);border-radius:4px"><div style="font-size:11px;color:var(--text2)">Memories</div><div style="font-size:24px;font-weight:600">' + (statsRes.total_memories || 0).toLocaleString() + '</div></div>';
-    html += '<div style="padding:12px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;display:flex;align-items:center;justify-content:center"><button class="btn btn-sm" onclick="runBackfill()">Re-index</button></div>';
+    html += '<div style="padding:12px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;display:flex;align-items:center;justify-content:center;gap:4px"><button class="btn btn-sm" onclick="runBackfill()">Sync new</button><button class="btn btn-sm" onclick="runBackfill(true)">Full</button></div>';
     html += '</div>';
 
     if (agents.length === 0 && !statsRes.error) {
@@ -406,20 +406,34 @@ async function loadDiscover() {
   }
 }
 
-async function runBackfill() {
+async function runBackfill(full) {
   var main = document.getElementById('mainContent');
-  main.innerHTML = '<div class="empty"><div class="spinner"></div> Backfilling index... <span id="backfillProgress">0 agents</span></div>';
+  main.innerHTML = '<div class="empty"><div class="spinner"></div> Indexing... <span id="backfillProgress">starting</span></div>';
   try {
+    // Get the latest indexed timestamp to skip already-indexed agents
+    var cutoff = 0;
+    if (!full) {
+      var statsRes = await api('GET', '/admin/api/stats');
+      cutoff = statsRes.latest_active_at || 0;
+    }
+
     var agenciesRes = await api('GET', '/agencies');
     var agencies = Array.isArray(agenciesRes) ? agenciesRes : (agenciesRes.agencies || []);
-    var indexed = 0;
+    var indexed = 0, skipped = 0;
     for (var ag of agencies) {
       var agId = ag.id || ag.name || ag;
       var agentsRes = await api('GET', '/agency/' + agId + '/agents');
       var agents = Array.isArray(agentsRes) ? agentsRes : (agentsRes.agents || []);
-      // Batch: send 20 agents at a time to the activity endpoint
-      for (var i = 0; i < agents.length; i += 20) {
-        var batch = agents.slice(i, i + 20);
+
+      // Skip agents already indexed (created before cutoff)
+      var newAgents = agents.filter(function(a) {
+        var t = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        return t > cutoff || !cutoff;
+      });
+      skipped += agents.length - newAgents.length;
+
+      for (var i = 0; i < newAgents.length; i += 20) {
+        var batch = newAgents.slice(i, i + 20);
         await Promise.all(batch.map(function(a) {
           var agentId = a.id || a.name || a;
           var createdAt = a.createdAt ? new Date(a.createdAt).getTime() : Date.now();
@@ -430,10 +444,10 @@ async function runBackfill() {
         }));
         indexed += batch.length;
         var el = document.getElementById('backfillProgress');
-        if (el) el.textContent = indexed.toLocaleString() + ' agents';
+        if (el) el.textContent = indexed.toLocaleString() + ' new' + (skipped ? ', ' + skipped.toLocaleString() + ' skipped' : '');
       }
     }
-    toast('Indexed ' + indexed.toLocaleString() + ' agents');
+    toast('Indexed ' + indexed.toLocaleString() + ' new agents' + (skipped ? ', skipped ' + skipped.toLocaleString() : ''));
     loadDiscover();
   } catch(e) {
     toast('Backfill failed: ' + e.message, 'error');
