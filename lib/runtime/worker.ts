@@ -72,6 +72,99 @@ function secureCompare(a: string | null, b: string): boolean {
 }
 
 /**
+ * Verify a Firebase ID token using Google's public keys.
+ * Accepts tokens from both dev and prod Firebase projects.
+ */
+const FIREBASE_PROJECTS = [
+  "co2-target-asset-tracking",
+  "co2-target-asset-tracking-dev",
+];
+const GOOGLE_CERTS_URL = "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com";
+
+let cachedCerts: { keys: Record<string, CryptoKey>; expiresAt: number } | null = null;
+
+async function fetchGoogleCerts(): Promise<Record<string, CryptoKey>> {
+  if (cachedCerts && Date.now() < cachedCerts.expiresAt) {
+    return cachedCerts.keys;
+  }
+  const res = await fetch(GOOGLE_CERTS_URL);
+  if (!res.ok) return {};
+  const certs = await res.json() as Record<string, string>;
+
+  // Parse Cache-Control max-age for TTL
+  const cc = res.headers.get("Cache-Control") || "";
+  const maxAge = parseInt(cc.match(/max-age=(\d+)/)?.[1] || "3600", 10);
+
+  const keys: Record<string, CryptoKey> = {};
+  for (const [kid, pem] of Object.entries(certs)) {
+    try {
+      const der = pemToDer(pem);
+      keys[kid] = await crypto.subtle.importKey(
+        "spki", der, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]
+      );
+    } catch { /* skip invalid certs */ }
+  }
+
+  cachedCerts = { keys, expiresAt: Date.now() + maxAge * 1000 };
+  return keys;
+}
+
+function pemToDer(pem: string): ArrayBuffer {
+  const b64 = pem.replace(/-----[A-Z ]+-----/g, "").replace(/\s/g, "");
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+function decodeJwtPart(part: string): Record<string, unknown> {
+  const padded = part.replace(/-/g, "+").replace(/_/g, "/");
+  return JSON.parse(atob(padded));
+}
+
+async function verifyFirebaseToken(token: string): Promise<boolean> {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return false;
+
+    const header = decodeJwtPart(parts[0]) as { alg?: string; kid?: string };
+    const payload = decodeJwtPart(parts[1]) as {
+      iss?: string; aud?: string; exp?: number; iat?: number; sub?: string;
+    };
+
+    // Check algorithm
+    if (header.alg !== "RS256") return false;
+
+    // Check issuer matches a known Firebase project
+    const project = FIREBASE_PROJECTS.find(
+      (p) => payload.iss === `https://securetoken.google.com/${p}` && payload.aud === p
+    );
+    if (!project) return false;
+
+    // Check expiry (allow 5 min clock skew)
+    const now = Math.floor(Date.now() / 1000);
+    if (!payload.exp || payload.exp < now - 300) return false;
+    if (!payload.iat || payload.iat > now + 300) return false;
+    if (!payload.sub) return false;
+
+    // Verify signature with Google's public key
+    const certs = await fetchGoogleCerts();
+    const key = header.kid ? certs[header.kid] : undefined;
+    if (!key) return false;
+
+    const signatureBytes = Uint8Array.from(
+      atob(parts[2].replace(/-/g, "+").replace(/_/g, "/")),
+      (c) => c.charCodeAt(0)
+    );
+    const dataBytes = new TextEncoder().encode(parts[0] + "." + parts[1]);
+
+    return await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, signatureBytes, dataBytes);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Create a DO request URL that preserves the original host but remaps the pathname.
  * This is important for OAuth callbacks where the DO needs to know the public host.
  */
@@ -635,13 +728,33 @@ export const createHandler = (opts: HandlerOptions = {}) => {
         return new Response(null, { status: 204, headers: CORS_HEADERS });
       }
 
-      // Auth check (skip for OAuth callbacks which come from browser redirects)
-      // OAuth callback pattern: /oauth/agency/{agencyId}/callback with state param
+      // Auth check — accepts either:
+      // 1. X-SECRET header or ?key= query param (legacy, machine-to-machine)
+      // 2. Authorization: Bearer <firebase-id-token> (user sign-in from admin UI)
+      // Skip for OAuth callbacks and the /admin page itself (serves static HTML)
       const isOAuthCallback = /^\/oauth\/agency\/[^/]+\/callback$/.test(url.pathname) && url.searchParams.has("state");
       const isAdminPage = url.pathname === "/admin";
       const providedSecret = req.headers.get("X-SECRET") || url.searchParams.get("key");
       const secret = process.env.SECRET;
-      if (secret && !secureCompare(providedSecret, secret) && !isOAuthCallback && !isAdminPage) {
+
+      let authed = !secret || isOAuthCallback || isAdminPage;
+
+      // Check legacy secret
+      if (!authed && providedSecret && secureCompare(providedSecret, secret)) {
+        authed = true;
+      }
+
+      // Check Firebase ID token
+      if (!authed) {
+        const authHeader = req.headers.get("Authorization") || "";
+        if (authHeader.startsWith("Bearer ")) {
+          const token = authHeader.slice(7);
+          const verified = await verifyFirebaseToken(token);
+          if (verified) authed = true;
+        }
+      }
+
+      if (!authed) {
         if (req.headers.get("Upgrade")?.toLowerCase() === "websocket") {
           return withCors(new Response("Unauthorized", { status: 401 }));
         }
@@ -655,7 +768,7 @@ export const createHandler = (opts: HandlerOptions = {}) => {
           return withCors(new Response("Unauthorized", { status: 401 }));
         }
         return new Response(
-          "Forbidden: Please provide ?key=YOUR_SECRET or X-SECRET header",
+          "Forbidden: Please provide ?key=YOUR_SECRET or sign in with your CO2 account",
           { status: 403 }
         );
       }

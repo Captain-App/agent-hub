@@ -17,6 +17,8 @@ export function getAdminHtml(): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Agent Hub Admin</title>
+<script src="https://www.gstatic.com/firebasejs/11.6.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/11.6.0/firebase-auth-compat.js"></script>
 <style>
   :root {
     --bg: #0d1117; --bg2: #161b22; --bg3: #21262d; --border: #30363d;
@@ -120,7 +122,10 @@ export function getAdminHtml(): string {
     </div>
     <div class="status" id="statusBar">
       <div class="dot dot-yellow"></div>
-      <span>Not connected</span>
+      <span>Not signed in</span>
+    </div>
+    <div style="padding:8px 16px;border-top:1px solid var(--border)">
+      <button class="btn btn-sm" onclick="doSignOut()" style="width:100%">Sign Out</button>
     </div>
   </div>
   <div class="main" id="mainContent">
@@ -129,15 +134,43 @@ export function getAdminHtml(): string {
 </div>
 
 <script>
+// --- Firebase config (detected from URL: dev vs prod) ---
+const FIREBASE_CONFIGS = {
+  dev: {
+    apiKey: 'AIzaSyBbta_ee3DWNg2Vt81zVJKrmAsOnZTdCt0',
+    authDomain: 'co2-target-asset-tracking-dev.firebaseapp.com',
+    projectId: 'co2-target-asset-tracking-dev',
+  },
+  prod: {
+    apiKey: 'AIzaSyDrGUku6S-PkwZ39_4q00-HnmrsEelwSW8',
+    authDomain: 'co2-target-asset-tracking.firebaseapp.com',
+    projectId: 'co2-target-asset-tracking',
+  },
+};
+const isDev = location.hostname.includes('dev.');
+const fbConfig = isDev ? FIREBASE_CONFIGS.dev : FIREBASE_CONFIGS.prod;
+firebase.initializeApp(fbConfig);
+const auth = firebase.auth();
+
 const BASE = location.origin;
-let SECRET = new URLSearchParams(location.search).get('key') || localStorage.getItem('hub_admin_key') || '';
+let idToken = '';
+let currentUser = null;
 let currentAgency = '';
 let currentAgent = '';
 let currentView = 'memories';
 
 // --- API helpers ---
 async function api(method, path, body) {
-  const opts = { method, headers: { 'X-SECRET': SECRET, 'Content-Type': 'application/json' } };
+  // Refresh token if needed
+  if (currentUser) {
+    idToken = await currentUser.getIdToken();
+  }
+  const headers = { 'Content-Type': 'application/json' };
+  if (idToken) headers['Authorization'] = 'Bearer ' + idToken;
+  // Fallback: also send as X-SECRET for backwards compat with key-based auth
+  const keyParam = new URLSearchParams(location.search).get('key');
+  if (keyParam) headers['X-SECRET'] = keyParam;
+  const opts = { method, headers };
   if (body) opts.body = JSON.stringify(body);
   const res = await fetch(BASE + path, opts);
   if (!res.ok) throw new Error(res.status + ': ' + (await res.text()));
@@ -160,31 +193,63 @@ function setStatus(color, text) {
   document.getElementById('statusBar').innerHTML = '<div class="dot dot-' + color + '"></div><span>' + text + '</span>';
 }
 
-// --- Init ---
-function showKeyPrompt() {
+// --- Auth ---
+function showSignIn() {
+  document.getElementById('agencySelect').innerHTML = '<option value="">Sign in first</option>';
   document.getElementById('mainContent').innerHTML = '<div class="panel" style="max-width:400px;margin:80px auto">' +
-    '<div class="panel-header"><h2>Connect to Hub</h2></div><div class="panel-body">' +
-    '<p style="color:var(--text2);margin-bottom:12px">Enter your hub API key to continue.</p>' +
-    '<div class="form-row"><input id="keyInput" type="password" placeholder="API Key (SECRET)" autofocus></div>' +
-    '<div class="form-row"><button class="btn btn-primary" onclick="connectWithKey()">Connect</button></div>' +
+    '<div class="panel-header"><h2>Sign In</h2></div><div class="panel-body">' +
+    '<p style="color:var(--text2);margin-bottom:12px">Sign in with your CO2 account.</p>' +
+    '<div class="form-row"><input id="emailInput" type="email" placeholder="Email" autofocus></div>' +
+    '<div class="form-row"><input id="passInput" type="password" placeholder="Password"></div>' +
+    '<div id="authError" style="color:var(--red);font-size:12px;margin-bottom:8px;display:none"></div>' +
+    '<div class="form-row"><button class="btn btn-primary" onclick="doSignIn()" id="signInBtn">Sign In</button></div>' +
     '</div></div>';
-  document.getElementById('keyInput')?.addEventListener('keydown', e => { if (e.key === 'Enter') connectWithKey(); });
+  document.getElementById('passInput')?.addEventListener('keydown', function(e) { if (e.key === 'Enter') doSignIn(); });
 }
 
-async function connectWithKey() {
-  const input = document.getElementById('keyInput');
-  SECRET = input ? input.value.trim() : '';
-  if (!SECRET) return toast('Key required', 'error');
-  localStorage.setItem('hub_admin_key', SECRET);
-  await init();
+async function doSignIn() {
+  var email = document.getElementById('emailInput')?.value?.trim();
+  var pass = document.getElementById('passInput')?.value;
+  if (!email || !pass) return toast('Email and password required', 'error');
+  var btn = document.getElementById('signInBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Signing in...'; }
+  var errEl = document.getElementById('authError');
+  if (errEl) errEl.style.display = 'none';
+  try {
+    await auth.signInWithEmailAndPassword(email, pass);
+    // onAuthStateChanged will handle the rest
+  } catch (e) {
+    if (errEl) { errEl.textContent = e.message.replace('Firebase: ', ''); errEl.style.display = 'block'; }
+    if (btn) { btn.disabled = false; btn.textContent = 'Sign In'; }
+  }
 }
+
+function doSignOut() {
+  auth.signOut();
+}
+
+// Firebase auth state listener
+auth.onAuthStateChanged(async function(user) {
+  if (user) {
+    currentUser = user;
+    idToken = await user.getIdToken();
+    setStatus('green', user.email);
+    init();
+  } else {
+    currentUser = null;
+    idToken = '';
+    setStatus('yellow', 'Not signed in');
+    // Check for legacy ?key= param
+    var keyParam = new URLSearchParams(location.search).get('key');
+    if (keyParam) {
+      init(); // legacy key-based auth
+    } else {
+      showSignIn();
+    }
+  }
+});
 
 async function init() {
-  if (!SECRET) {
-    document.getElementById('agencySelect').innerHTML = '<option value="">Enter key first</option>';
-    showKeyPrompt();
-    return;
-  }
   try {
     const agencies = await api('GET', '/agencies');
     const sel = document.getElementById('agencySelect');
@@ -195,13 +260,13 @@ async function init() {
       opt.textContent = a.name || a.id || a;
       sel.appendChild(opt);
     });
-    setStatus('green', 'Connected');
+    setStatus('green', currentUser ? currentUser.email : 'Connected');
+    document.getElementById('mainContent').innerHTML = '<div class="empty">Select an agency and agent to begin.</div>';
   } catch (e) {
     if (e.message.includes('401') || e.message.includes('403')) {
-      localStorage.removeItem('hub_admin_key');
-      SECRET = '';
-      showKeyPrompt();
-      toast('Invalid key', 'error');
+      toast('Access denied', 'error');
+      if (currentUser) { auth.signOut(); }
+      else { showSignIn(); }
     } else {
       setStatus('red', 'Error: ' + e.message);
     }
