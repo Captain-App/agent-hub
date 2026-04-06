@@ -1,4 +1,4 @@
-import { d as AgentPlugin } from './types-Bjz6cv1W.js';
+import { d as AgentPlugin } from './types-Cicc56C3.js';
 
 /**
  * Resolves `$VAR_NAME` patterns in tool arguments using agent vars.

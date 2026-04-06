@@ -498,10 +498,21 @@ type ChatMessageBase = {
     /** Timestamp when the message was created (ISO string). */
     ts?: string;
 };
+/** A block of content within a multimodal message. */
+type ContentBlock = {
+    type: "text";
+    text: string;
+} | {
+    type: "image_url";
+    image_url: {
+        url: string;
+        detail?: string;
+    };
+};
 /** A single message in the conversation (user, assistant, system, or tool result). */
 type ChatMessage = ChatMessageBase & ({
     role: "system" | "user";
-    content: string;
+    content: string | ContentBlock[];
 } | {
     role: "assistant";
     reasoning?: string;
@@ -515,11 +526,20 @@ type ChatMessage = ChatMessageBase & ({
     content: string;
     toolCallId: string;
 });
+/** A file attachment sent with an invoke request. */
+interface Attachment {
+    filename: string;
+    mimeType: string;
+    /** Base64-encoded file content. */
+    data: string;
+}
 /** Request body for the `/invoke` endpoint. */
 interface InvokeBody {
     threadId?: string;
     messages?: ChatMessage[];
     files?: Record<string, string>;
+    /** File attachments to merge into the last user message as multimodal content blocks. */
+    attachments?: Attachment[];
     idempotencyKey?: string;
     agentType?: string;
     tags?: string[];
@@ -721,4 +741,4 @@ type CfCtx = ExecutionContext & {
     exports: Exports;
 };
 
-export { type AgentBlueprint as A, type ToolMeta as B, type ChatMessage as C, parseModel as D, type Exports as E, type FSEntry as F, HubAgent as H, type Info as I, LegacyEventTypeMap as L, type ModelResult as M, type Provider as P, type RunState as R, type SubagentLink as S, type ToolCall as T, type VarHint as V, type ModelRequest as a, type CfCtx as b, type Tool as c, type AgentPlugin as d, Agency as e, type ToolJsonSchema as f, type ToolContext as g, type AgencyRelayEvent as h, type AgentEnv as i, type AgentEvent as j, type AgentEventData as k, AgentEventType as l, type AgentFSContext as m, AgentFileSystem as n, type AgentState as o, type AnalyticsEngineDataset as p, type ApproveBody as q, type ChatMessageBase as r, type CreateThreadRequest as s, type CustomEventData as t, type InvokeBody as u, type PluginContext as v, type RunStatus as w, type SubagentLinkStatus as x, type ThreadMetadata as y, type ThreadRequestContext as z };
+export { type AgentBlueprint as A, type SubagentLinkStatus as B, type ChatMessage as C, type ThreadMetadata as D, type Exports as E, type FSEntry as F, type ThreadRequestContext as G, HubAgent as H, type Info as I, type ToolMeta as J, parseModel as K, LegacyEventTypeMap as L, type ModelResult as M, type Provider as P, type RunState as R, type SubagentLink as S, type ToolCall as T, type VarHint as V, type ModelRequest as a, type CfCtx as b, type Tool as c, type AgentPlugin as d, Agency as e, type ToolJsonSchema as f, type ToolContext as g, type AgencyRelayEvent as h, type AgentEnv as i, type AgentEvent as j, type AgentEventData as k, AgentEventType as l, type AgentFSContext as m, AgentFileSystem as n, type AgentState as o, type AnalyticsEngineDataset as p, type ApproveBody as q, type Attachment as r, type ChatMessageBase as s, type ContentBlock as t, type CreateThreadRequest as u, type CustomEventData as v, type InvokeBody as w, ModelPlanBuilder as x, type PluginContext as y, type RunStatus as z };

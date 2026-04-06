@@ -111,7 +111,16 @@ async function fetchGoogleCerts(): Promise<Record<string, CryptoKey>> {
   return keys;
 }
 
-function decodeJwtPart(part: string): Record<string, unknown> {
+interface JwtHeader { alg: string; kid?: string; typ?: string; }
+interface JwtPayload { iss?: string; aud?: string; exp?: number; iat?: number; sub?: string; email?: string; [key: string]: unknown; }
+
+function decodeJwtHeader(part: string): JwtHeader {
+  let b64 = part.replace(/-/g, "+").replace(/_/g, "/");
+  while (b64.length % 4) b64 += "=";
+  return JSON.parse(atob(b64));
+}
+
+function decodeJwtPayload(part: string): JwtPayload {
   let b64 = part.replace(/-/g, "+").replace(/_/g, "/");
   while (b64.length % 4) b64 += "=";
   return JSON.parse(atob(b64));
@@ -122,10 +131,8 @@ async function verifyFirebaseToken(token: string): Promise<boolean> {
     const parts = token.split(".");
     if (parts.length !== 3) return false;
 
-    const header = decodeJwtPart(parts[0]) as { alg?: string; kid?: string };
-    const payload = decodeJwtPart(parts[1]) as {
-      iss?: string; aud?: string; exp?: number; iat?: number; sub?: string;
-    };
+    const header = decodeJwtHeader(parts[0]);
+    const payload = decodeJwtPayload(parts[1]);
 
     // Check algorithm
     if (header.alg !== "RS256") return false;
@@ -822,6 +829,130 @@ export const createHandler = (opts: HandlerOptions = {}) => {
     return Response.json({ indexed, errors, agencies: agencies.length });
   });
 
+  // Admin backup — snapshot all active agents to R2 with dated paths
+  router.post("/admin/api/backup", async (_req: IRequest, { env }: RequestContext) => {
+    const db = (env as any).ADMIN_DB;
+    const r2 = (env as any).FS;
+    if (!db || !r2) return Response.json({ error: "ADMIN_DB or FS not configured" });
+
+    const today = new Date().toISOString().slice(0, 10); // 2026-04-06
+
+    // Check if already backed up today
+    const { results: existing } = await db.prepare(
+      "SELECT status FROM nightly_backups WHERE backup_date = ?"
+    ).bind(today).all();
+    if (existing.length > 0 && existing[0].status === "completed") {
+      return Response.json({ status: "already_completed", date: today });
+    }
+
+    // Mark as running
+    await db.prepare(
+      "INSERT INTO nightly_backups (backup_date, started_at, status) VALUES (?, ?, 'running') ON CONFLICT(backup_date) DO UPDATE SET started_at = excluded.started_at, status = 'running'"
+    ).bind(today, Date.now()).run();
+
+    // Get all agents with snapshots (from conversation_snapshots — these have R2 data)
+    const { results: snapshots } = await db.prepare(
+      "SELECT agent_id, agency_id, r2_path, size_bytes FROM conversation_snapshots ORDER BY snapshot_at DESC"
+    ).all();
+
+    let backed = 0;
+    let totalSize = 0;
+
+    for (const snap of snapshots as any[]) {
+      try {
+        // Copy latest snapshot to dated backup path
+        const src = await r2.get(snap.r2_path);
+        if (!src) continue;
+
+        const backupPath = `backups/${today}/${snap.agency_id}/${snap.agent_id}.json`;
+        await r2.put(backupPath, src.body, {
+          httpMetadata: { contentType: "application/json" },
+        });
+        backed++;
+        totalSize += snap.size_bytes || 0;
+      } catch {
+        // Skip failed copies
+      }
+    }
+
+    // Mark as completed
+    await db.prepare(
+      "UPDATE nightly_backups SET completed_at = ?, agent_count = ?, total_size_bytes = ?, status = 'completed' WHERE backup_date = ?"
+    ).bind(Date.now(), backed, totalSize, today).run();
+
+    return Response.json({ status: "completed", date: today, agents: backed, sizeBytes: totalSize });
+  });
+
+  // Admin export — snapshot a single agent's state to R2 (for initial migration)
+  router.post("/admin/api/export/:agencyId/:agentId", async (req: IRequest, { env, ctx: cfCtx }: RequestContext) => {
+    const r2 = (env as any).FS;
+    const db = (env as any).ADMIN_DB;
+    if (!r2) return Response.json({ error: "FS (R2) not configured" });
+
+    const { agencyId, agentId } = req.params;
+
+    // Fetch agent state via the DO
+    try {
+      const stateRes = await handleAgentRequest(
+        { ...req, params: { agencyId, agentId, path: "state" }, url: `${new URL(req.url).origin}/agency/${agencyId}/agent/${agentId}/state`, method: "GET" } as any,
+        { env: env as any, ctx: cfCtx, opts: {} as any }
+      );
+      const state = await stateRes.json() as any;
+      const messages = state.messages || [];
+
+      // Fetch memories via action
+      let memories: any[] = [];
+      try {
+        const memReq = new Request(`${new URL(req.url).origin}/agency/${agencyId}/agent/${agentId}/action`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-SECRET": process.env.SECRET || "" },
+          body: JSON.stringify({ type: "browseMemories" }),
+        });
+        const memRes = await handleAgentRequest(
+          { ...memReq, params: { agencyId, agentId, path: "action" } } as any,
+          { env: env as any, ctx: cfCtx, opts: {} as any }
+        );
+        const memData = await memRes.json() as any;
+        memories = memData.memories || [];
+      } catch { /* no memories */ }
+
+      const snapshot = {
+        agentId, agencyId,
+        agentType: state.agentType || state.info?.agentType || null,
+        snapshotAt: Date.now(),
+        messages,
+        memories: memories.map((m: any) => ({ key: m.key, value: m.value, updated_at: m.updatedAt ? new Date(m.updatedAt).getTime() : Date.now() })),
+      };
+
+      const json = JSON.stringify(snapshot);
+      const r2Path = `conversations/${agencyId}/${agentId}/latest.json`;
+      await r2.put(r2Path, json, { httpMetadata: { contentType: "application/json" } });
+
+      // Record in D1
+      if (db) {
+        await db.prepare(
+          `INSERT INTO conversation_snapshots (agent_id, agency_id, snapshot_at, r2_path, message_count, memory_count, size_bytes)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(agency_id, agent_id) DO UPDATE SET snapshot_at=excluded.snapshot_at, r2_path=excluded.r2_path, message_count=excluded.message_count, memory_count=excluded.memory_count, size_bytes=excluded.size_bytes`
+        ).bind(agentId, agencyId, Date.now(), r2Path, messages.length, memories.length, json.length).run();
+      }
+
+      return Response.json({ ok: true, messages: messages.length, memories: memories.length, sizeBytes: json.length, r2Path });
+    } catch (e: any) {
+      return Response.json({ error: e.message });
+    }
+  });
+
+  // Admin backup history
+  router.get("/admin/api/backups", async (_req: IRequest, { env }: RequestContext) => {
+    const db = (env as any).ADMIN_DB;
+    if (!db) return Response.json({ error: "ADMIN_DB not configured", backups: [] });
+    const { results } = await db.prepare(
+      "SELECT * FROM nightly_backups ORDER BY backup_date DESC LIMIT 30"
+    ).all();
+    return Response.json({ backups: results });
+  });
+
   // Admin chat — natural language queries against the D1 index
   router.post("/admin/api/chat", async (req: IRequest, { env }: RequestContext) => {
     const db = (env as any).ADMIN_DB;
@@ -895,8 +1026,8 @@ Rules:
     if (parts.length !== 3) return Response.json({ error: "Not 3 parts", partCount: parts.length });
 
     try {
-      const header = decodeJwtPart(parts[0]);
-      const payload = decodeJwtPart(parts[1]);
+      const header = decodeJwtHeader(parts[0]);
+      const payload = decodeJwtPayload(parts[1]);
       const project = FIREBASE_PROJECTS.find(
         (p) => payload.iss === `https://securetoken.google.com/${p}` && payload.aud === p
       );
@@ -935,7 +1066,7 @@ Rules:
     }
   });
 
-  router.get("/admin", () => new Response(ADMIN_HTML, {
+  router.get("/admin", () => new Response(getAdminHtml(), {
     headers: { "Content-Type": "text/html; charset=utf-8" },
   }));
 
@@ -963,7 +1094,7 @@ Rules:
       let authed = !secret || isOAuthCallback || isAdminPage;
 
       // Check legacy secret
-      if (!authed && providedSecret && secureCompare(providedSecret, secret)) {
+      if (!authed && providedSecret && secret && secureCompare(providedSecret, secret)) {
         authed = true;
       }
 
@@ -999,6 +1130,62 @@ Rules:
       // Route the request
       const response = await router.fetch(req, { env, ctx, opts });
       return withCors(response);
+    },
+
+    // Cron trigger — nightly backup at 2am UTC
+    async scheduled(_event: unknown, env: HandlerEnv, _ctx: CfCtx) {
+      const db = (env as any).ADMIN_DB;
+      const r2 = (env as any).FS;
+      if (!db || !r2) return;
+
+      const today = new Date().toISOString().slice(0, 10);
+      console.log(`[nightly-backup] Starting backup for ${today}`);
+
+      try {
+        // Use the same logic as POST /admin/api/backup
+        const { results: existing } = await db.prepare(
+          "SELECT status FROM nightly_backups WHERE backup_date = ?"
+        ).bind(today).all();
+        if (existing.length > 0 && (existing[0] as any).status === "completed") {
+          console.log(`[nightly-backup] Already completed for ${today}`);
+          return;
+        }
+
+        await db.prepare(
+          "INSERT INTO nightly_backups (backup_date, started_at, status) VALUES (?, ?, 'running') ON CONFLICT(backup_date) DO UPDATE SET started_at = excluded.started_at, status = 'running'"
+        ).bind(today, Date.now()).run();
+
+        const { results: snapshots } = await db.prepare(
+          "SELECT agent_id, agency_id, r2_path, size_bytes FROM conversation_snapshots ORDER BY snapshot_at DESC"
+        ).all();
+
+        let backed = 0;
+        let totalSize = 0;
+
+        for (const snap of snapshots as any[]) {
+          try {
+            const src = await r2.get(snap.r2_path);
+            if (!src) continue;
+            const backupPath = `backups/${today}/${snap.agency_id}/${snap.agent_id}.json`;
+            await r2.put(backupPath, src.body, {
+              httpMetadata: { contentType: "application/json" },
+            });
+            backed++;
+            totalSize += snap.size_bytes || 0;
+          } catch { /* skip */ }
+        }
+
+        await db.prepare(
+          "UPDATE nightly_backups SET completed_at = ?, agent_count = ?, total_size_bytes = ?, status = 'completed' WHERE backup_date = ?"
+        ).bind(Date.now(), backed, totalSize, today).run();
+
+        console.log(`[nightly-backup] Completed: ${backed} agents, ${totalSize} bytes`);
+      } catch (e) {
+        console.error("[nightly-backup] Failed:", e);
+        await db.prepare(
+          "UPDATE nightly_backups SET status = 'failed' WHERE backup_date = ?"
+        ).bind(today).run().catch(() => {});
+      }
     },
   };
 };
