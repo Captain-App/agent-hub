@@ -709,12 +709,22 @@ export const createHandler = (opts: HandlerOptions = {}) => {
   router.get("/oauth/agency/:agencyId/callback", handleMcpOAuthCallback);
 
   // Admin API — D1-backed cross-agent queries
-  router.get("/admin/api/activity", async (_req: IRequest, { env }: RequestContext) => {
+  router.get("/admin/api/activity", async (req: IRequest, { env }: RequestContext) => {
     const db = (env as any).ADMIN_DB;
     if (!db) return Response.json({ error: "ADMIN_DB not configured", agents: [] });
-    const { results } = await db.prepare(
-      "SELECT * FROM agent_activity ORDER BY last_active_at DESC LIMIT 100"
-    ).all();
+    const url = new URL(req.url);
+    const q = url.searchParams.get("q")?.trim();
+    let results;
+    if (q) {
+      const like = `%${q}%`;
+      ({ results } = await db.prepare(
+        "SELECT * FROM agent_activity WHERE agent_id LIKE ? OR agency_id LIKE ? OR agent_type LIKE ? ORDER BY last_active_at DESC LIMIT 100"
+      ).bind(like, like, like).all());
+    } else {
+      ({ results } = await db.prepare(
+        "SELECT * FROM agent_activity ORDER BY last_active_at DESC LIMIT 100"
+      ).all());
+    }
     return Response.json({ agents: results, count: results.length });
   });
 
