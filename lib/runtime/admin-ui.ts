@@ -115,6 +115,7 @@ export function getAdminHtml(): string {
       <button class="nav-item" data-view="workspace" onclick="switchView('workspace')">Workspace Config</button>
       <button class="nav-item" data-view="inspector" onclick="switchView('inspector')">Tool Inspector</button>
       <button class="nav-item" data-view="usage" onclick="switchView('usage')">Usage & Limits</button>
+      <button class="nav-item" data-view="replay" onclick="switchView('replay')">Replay</button>
       <button class="nav-item" data-view="state" onclick="switchView('state')">Agent State</button>
     </div>
     <div class="status" id="statusBar">
@@ -257,6 +258,7 @@ async function loadView() {
       case 'workspace': await loadWorkspace(); break;
       case 'inspector': await loadInspector(); break;
       case 'usage': await loadUsage(); break;
+      case 'replay': await loadReplay(); break;
       case 'state': await loadState(); break;
     }
   } catch (e) {
@@ -584,6 +586,91 @@ async function resetUsage() {
   await action('resetUsage');
   toast('Usage counters reset');
   loadUsage();
+}
+
+// --- Replay ---
+async function loadReplay() {
+  let runsData;
+  try { runsData = await action('browseRuns'); } catch(e) { runsData = null; }
+  const main = document.getElementById('mainContent');
+  let html = '';
+
+  html += '<div class="panel"><div class="panel-header"><h2>Conversation Runs</h2>';
+  html += '<span><button class="btn btn-primary btn-sm" onclick="saveCurrentRun()">Save Current</button> ';
+  html += '<button class="btn btn-sm" onclick="loadReplay()">Refresh</button></span></div>';
+  html += '<div class="panel-body no-pad">';
+
+  if (!runsData || !runsData.runs || runsData.runs.length === 0) {
+    html += '<div class="empty">No saved runs. Enable auto-save with HISTORY_ENABLED=true, or click "Save Current" to snapshot the active conversation.</div>';
+  } else {
+    html += '<table><tr><th>ID</th><th>Name</th><th>Messages</th><th>Tool Calls</th><th>Created</th><th></th></tr>';
+    runsData.runs.forEach(function(r) {
+      html += '<tr><td class="mono">' + r.id + '</td>';
+      html += '<td>' + esc(r.name) + '</td>';
+      html += '<td>' + r.messageCount + '</td>';
+      html += '<td>' + r.toolCallCount + '</td>';
+      html += '<td class="mono" style="font-size:11px;color:var(--text2)">' + new Date(r.createdAt).toLocaleString() + '</td>';
+      html += '<td><button class="btn btn-sm" onclick="viewRun(' + r.id + ')">View</button> ';
+      html += '<button class="btn btn-danger btn-sm" onclick="deleteRun(' + r.id + ')">Del</button></td></tr>';
+    });
+    html += '</table>';
+  }
+  html += '</div></div>';
+  html += '<div id="replayDetail"></div>';
+  main.innerHTML = html;
+}
+
+async function saveCurrentRun() {
+  var name = prompt('Run name (leave empty for auto):');
+  var payload = name ? { name: name } : {};
+  try {
+    var result = await action('saveRun', payload);
+    if (result.error) { toast(result.error, 'error'); return; }
+    toast('Saved: ' + (result.saved || 'ok'));
+    loadReplay();
+  } catch(e) { toast('Failed: ' + e.message, 'error'); }
+}
+
+async function deleteRun(id) {
+  if (!confirm('Delete run #' + id + '?')) return;
+  await action('deleteRun', { id: id });
+  toast('Deleted run #' + id);
+  loadReplay();
+}
+
+async function viewRun(id) {
+  var data = await action('loadRun', { id: id });
+  if (data.error) { toast(data.error, 'error'); return; }
+  var el = document.getElementById('replayDetail');
+  var html = '<div class="panel"><div class="panel-header"><h2>Run: ' + esc(data.name) + '</h2>';
+  html += '<span class="mono" style="font-size:11px;color:var(--text2)">' + data.messageCount + ' messages, ' + data.toolCallCount + ' tool calls, ' + new Date(data.createdAt).toLocaleString() + '</span></div>';
+
+  // Tool calls timeline
+  if (data.toolCalls && data.toolCalls.length > 0) {
+    html += '<div class="panel-body"><strong style="font-size:11px;color:var(--text2);text-transform:uppercase">Tool Calls</strong>';
+    data.toolCalls.forEach(function(tc, i) {
+      html += '<div class="tool-call" onclick="this.classList.toggle(\'expanded\')">';
+      html += '<div class="tool-call-header"><span><span class="badge badge-blue">' + esc(tc.name) + '</span> <span class="mono" style="color:var(--text2);font-size:11px">#' + (i+1) + '</span></span></div>';
+      html += '<div class="tool-call-body"><div class="json-view">' + esc(formatJson(tc.args || '{}')) + '</div></div>';
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+
+  // Messages
+  html += '<div class="panel-body no-pad">';
+  html += '<div style="padding:8px 12px;border-bottom:1px solid var(--border)"><strong style="font-size:11px;color:var(--text2);text-transform:uppercase">Conversation</strong></div>';
+  (data.messages || []).forEach(function(msg) {
+    var role = msg.role || 'unknown';
+    var content = '';
+    if (typeof msg.content === 'string') { content = msg.content; }
+    else if (Array.isArray(msg.content)) { content = msg.content.map(function(b) { return b.text || b.type || ''; }).join('\\n'); }
+    if (content.length > 500) content = content.slice(0, 500) + '...';
+    html += '<div class="message"><div class="message-role ' + role + '">' + role + '</div>';
+    html += '<div class="message-content">' + esc(content || '(tool call)') + '</div></div>';
+  });
+  html += '</div></div>';
+  el.innerHTML = html;
 }
 
 // --- Agent State ---
