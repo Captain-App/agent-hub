@@ -718,8 +718,8 @@ export const createHandler = (opts: HandlerOptions = {}) => {
     if (q) {
       const like = `%${q}%`;
       ({ results } = await db.prepare(
-        "SELECT * FROM agent_activity WHERE agent_id LIKE ? OR agency_id LIKE ? OR agent_type LIKE ? ORDER BY last_active_at DESC LIMIT 100"
-      ).bind(like, like, like).all());
+        "SELECT * FROM agent_activity WHERE agent_id LIKE ? OR agency_id LIKE ? OR agent_type LIKE ? OR user_id LIKE ? OR estate_id LIKE ? OR last_prompt LIKE ? ORDER BY last_active_at DESC LIMIT 100"
+      ).bind(like, like, like, like, like, like).all());
     } else {
       ({ results } = await db.prepare(
         "SELECT * FROM agent_activity ORDER BY last_active_at DESC LIMIT 100"
@@ -749,19 +749,23 @@ export const createHandler = (opts: HandlerOptions = {}) => {
     if (!db) return Response.json({ error: "ADMIN_DB not configured" });
     const body = await req.json() as any;
     await db.prepare(`
-      INSERT INTO agent_activity (agent_id, agency_id, agent_type, message_count, memory_count, run_count, last_active_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO agent_activity (agent_id, agency_id, agent_type, message_count, memory_count, run_count, last_active_at, updated_at, user_id, estate_id, last_prompt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(agency_id, agent_id) DO UPDATE SET
         agent_type = excluded.agent_type,
-        message_count = excluded.message_count,
+        message_count = CASE WHEN excluded.message_count > 0 THEN excluded.message_count ELSE message_count END,
         memory_count = CASE WHEN excluded.memory_count > 0 THEN excluded.memory_count ELSE memory_count END,
         run_count = CASE WHEN excluded.run_count > 0 THEN excluded.run_count ELSE run_count END,
         last_active_at = excluded.last_active_at,
-        updated_at = excluded.updated_at
+        updated_at = excluded.updated_at,
+        user_id = COALESCE(excluded.user_id, user_id),
+        estate_id = COALESCE(excluded.estate_id, estate_id),
+        last_prompt = COALESCE(excluded.last_prompt, last_prompt)
     `).bind(
       body.agent_id, body.agency_id, body.agent_type || null,
       body.message_count || 0, body.memory_count || 0, body.run_count || 0,
-      body.last_active_at || Date.now(), Date.now()
+      body.last_active_at || Date.now(), Date.now(),
+      body.user_id || null, body.estate_id || null, body.last_prompt || null
     ).run();
     return Response.json({ ok: true });
   });
@@ -816,6 +820,67 @@ export const createHandler = (opts: HandlerOptions = {}) => {
     }
 
     return Response.json({ indexed, errors, agencies: agencies.length });
+  });
+
+  // Admin chat — natural language queries against the D1 index
+  router.post("/admin/api/chat", async (req: IRequest, { env }: RequestContext) => {
+    const db = (env as any).ADMIN_DB;
+    if (!db) return Response.json({ error: "ADMIN_DB not configured" });
+
+    const { question } = await req.json() as { question: string };
+    if (!question) return Response.json({ error: "question required" });
+
+    // Build a SQL query from the question using a simple prompt
+    const systemPrompt = `You are a SQL assistant for an agent activity database. The table is:
+
+agent_activity(agent_id TEXT, agency_id TEXT, agent_type TEXT, message_count INT, memory_count INT, run_count INT, last_active_at INT (unix ms), updated_at INT, user_id TEXT, estate_id TEXT, last_prompt TEXT)
+
+Given a natural language question, respond with ONLY a JSON object: {"sql": "SELECT ...", "description": "one line explanation"}
+
+Rules:
+- Use SQLite syntax
+- LIMIT 20 max
+- Only SELECT queries (no mutations)
+- last_active_at and updated_at are unix milliseconds
+- For "yesterday" use: last_active_at > (strftime('%s','now','-1 day') * 1000)
+- For "today" use: last_active_at > (strftime('%s','now','start of day') * 1000)`;
+
+    try {
+      // Use the hub's own LLM to generate SQL
+      const llmBase = process.env.LLM_API_BASE || "https://openrouter.ai/api/v1";
+      const llmKey = process.env.LLM_API_KEY || "";
+      const model = "google/gemini-2.0-flash-lite-001";
+
+      const llmRes = await fetch(llmBase + "/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + llmKey },
+        body: JSON.stringify({
+          model,
+          max_tokens: 256,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: question },
+          ],
+        }),
+      });
+      const llmData = await llmRes.json() as any;
+      const content = llmData.choices?.[0]?.message?.content || "";
+
+      // Parse the JSON from the LLM response
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) return Response.json({ error: "Could not parse LLM response", raw: content });
+
+      const parsed = JSON.parse(jsonMatch[0]) as { sql: string; description: string };
+      if (!parsed.sql || !parsed.sql.toUpperCase().startsWith("SELECT")) {
+        return Response.json({ error: "Invalid query", raw: content });
+      }
+
+      // Execute the SQL
+      const { results } = await db.prepare(parsed.sql).all();
+      return Response.json({ sql: parsed.sql, description: parsed.description, results, count: results.length });
+    } catch (e: any) {
+      return Response.json({ error: e.message });
+    }
   });
 
   // Admin UI — served from ADMIN_HTML constant (see admin-ui.ts)

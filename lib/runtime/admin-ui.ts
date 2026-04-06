@@ -398,16 +398,18 @@ async function loadDiscover() {
     if (agents.length > 0) {
       html += '<div class="panel"><div class="panel-header"><h2>' + (discoverSearch ? 'Search Results' : 'Recent Agents') + ' (' + agents.length + ')</h2><button class="btn btn-sm" onclick="loadDiscover()">Refresh</button></div>';
       html += '<div class="panel-body no-pad">';
-      html += '<table><tr><th>Agent</th><th>Agency</th><th>Type</th><th>Messages</th><th>Memories</th><th>Last Active</th><th></th></tr>';
+      html += '<table><tr><th>Agent</th><th>Type</th><th>User / Estate</th><th>Msgs</th><th>Mem</th><th>Last Prompt</th><th>Last Active</th><th></th></tr>';
       agents.forEach(function(a) {
         var hasData = (a.message_count || 0) > 0 || (a.memory_count || 0) > 0;
+        var userEstate = [a.user_id, a.estate_id].filter(Boolean).join(' / ');
         html += '<tr>';
-        html += '<td class="mono" style="font-size:12px">' + esc((a.agent_id || '').slice(0, 12)) + '...</td>';
-        html += '<td>' + esc(a.agency_id || '') + '</td>';
-        html += '<td><span class="badge badge-blue">' + esc(a.agent_type || '-') + '</span></td>';
+        html += '<td class="mono" style="font-size:11px">' + esc((a.agent_id || '').slice(0, 10)) + '</td>';
+        html += '<td><span class="badge badge-blue" style="font-size:10px">' + esc(a.agent_type || '-') + '</span></td>';
+        html += '<td style="font-size:11px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (userEstate ? esc(userEstate) : '<span style="color:var(--text2)">-</span>') + '</td>';
         html += '<td>' + (hasData ? '<strong>' + a.message_count + '</strong>' : '<span style="color:var(--text2)">-</span>') + '</td>';
         html += '<td>' + (hasData ? '<strong>' + a.memory_count + '</strong>' : '<span style="color:var(--text2)">-</span>') + '</td>';
-        html += '<td class="mono" style="font-size:11px;color:var(--text2)">' + (a.last_active_at ? new Date(a.last_active_at).toLocaleString() : '-') + '</td>';
+        html += '<td style="font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text2)">' + (a.last_prompt ? esc(a.last_prompt.slice(0, 60)) : '-') + '</td>';
+        html += '<td class="mono" style="font-size:10px;color:var(--text2)">' + (a.last_active_at ? new Date(a.last_active_at).toLocaleString() : '-') + '</td>';
         html += '<td><button class="btn btn-sm" onclick="selectAgent(&apos;' + esc(a.agency_id || '') + '&apos;,&apos;' + esc(a.agent_id || '') + '&apos;)">Inspect</button></td>';
         html += '</tr>';
       });
@@ -416,13 +418,66 @@ async function loadDiscover() {
       html += '<div class="panel"><div class="panel-body"><div class="empty">No agents matching "' + esc(discoverSearch) + '"</div></div></div>';
     }
 
+    // Chat bar
+    html += '<div class="panel"><div class="panel-header"><h2>Ask</h2></div>';
+    html += '<div class="panel-body"><div class="form-row" style="margin:0"><input id="chatInput" type="text" placeholder="Ask a question... e.g. &quot;which agents have memories?&quot; or &quot;most active agent today&quot;" style="flex:1"> ';
+    html += '<button class="btn btn-primary" onclick="doAdminChat()" id="chatBtn">Ask</button></div>';
+    html += '<div id="chatResult"></div></div></div>';
+
     main.innerHTML = html;
-    // Wire up enter key on search
+    // Wire up enter keys
     var searchInput = document.getElementById('discoverSearchInput');
     if (searchInput) searchInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') doDiscoverSearch(); });
+    var chatInput = document.getElementById('chatInput');
+    if (chatInput) chatInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') doAdminChat(); });
   } catch(e) {
     main.innerHTML = '<div class="panel"><div class="panel-body"><div class="empty">Error: ' + esc(e.message) + '</div></div></div>';
   }
+}
+
+async function doAdminChat() {
+  var input = document.getElementById('chatInput');
+  var question = input ? input.value.trim() : '';
+  if (!question) return;
+  var result = document.getElementById('chatResult');
+  var btn = document.getElementById('chatBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '...'; }
+  if (result) result.innerHTML = '<div style="padding:12px;color:var(--text2)"><div class="spinner" style="display:inline-block;vertical-align:middle;margin-right:8px"></div> Thinking...</div>';
+  try {
+    var res = await api('POST', '/admin/api/chat', { question: question });
+    var html = '';
+    if (res.error) {
+      html = '<div style="padding:12px;color:var(--red)">' + esc(res.error) + (res.raw ? '<br><pre style="font-size:11px;color:var(--text2);margin-top:4px">' + esc(res.raw) + '</pre>' : '') + '</div>';
+    } else {
+      html = '<div style="padding:12px">';
+      html += '<div style="color:var(--text2);font-size:12px;margin-bottom:8px">' + esc(res.description || '') + '</div>';
+      html += '<div class="mono" style="font-size:11px;color:var(--text2);margin-bottom:8px;padding:4px 8px;background:var(--bg);border-radius:4px;overflow-x:auto">' + esc(res.sql || '') + '</div>';
+      if (res.results && res.results.length > 0) {
+        var cols = Object.keys(res.results[0]);
+        html += '<table><tr>';
+        cols.forEach(function(c) { html += '<th>' + esc(c) + '</th>'; });
+        html += '</tr>';
+        res.results.forEach(function(row) {
+          html += '<tr>';
+          cols.forEach(function(c) {
+            var val = row[c];
+            if (typeof val === 'number' && val > 1000000000000) val = new Date(val).toLocaleString();
+            html += '<td style="font-size:12px">' + esc(String(val ?? '-')) + '</td>';
+          });
+          html += '</tr>';
+        });
+        html += '</table>';
+        html += '<div style="font-size:11px;color:var(--text2);margin-top:4px">' + res.count + ' result(s)</div>';
+      } else {
+        html += '<div style="color:var(--text2)">No results</div>';
+      }
+      html += '</div>';
+    }
+    if (result) result.innerHTML = html;
+  } catch(e) {
+    if (result) result.innerHTML = '<div style="padding:12px;color:var(--red)">' + esc(e.message) + '</div>';
+  }
+  if (btn) { btn.disabled = false; btn.textContent = 'Ask'; }
 }
 
 function doDiscoverSearch() {
@@ -497,10 +552,27 @@ async function runEnrich() {
         var update = { agent_id: agentId, agency_id: agencyId, agent_type: a.agent_type, last_active_at: a.last_active_at };
         try {
           var state = await api('GET', '/agency/' + agencyId + '/agent/' + agentId + '/state');
-          update.message_count = (state.messages || []).length;
-          if (update.message_count > 0) {
-            // Use the last message timestamp as last_active_at
-            var msgs = state.messages || [];
+          var msgs = state.messages || [];
+          update.message_count = msgs.length;
+          // Extract user_id and estate_id from agent info/vars
+          if (state.info) {
+            update.user_id = state.info.userId || state.info.user_id || null;
+            update.estate_id = state.info.estateId || state.info.estate_id || null;
+          }
+          if (state.vars) {
+            if (!update.estate_id) update.estate_id = state.vars.ESTATE_ID || state.vars.estateId || null;
+            if (!update.user_id) update.user_id = state.vars.USER_ID || state.vars.userId || null;
+          }
+          // Get last user prompt
+          for (var mi = msgs.length - 1; mi >= 0; mi--) {
+            if (msgs[mi].role === 'user') {
+              var content = msgs[mi].content;
+              update.last_prompt = (typeof content === 'string' ? content : '').slice(0, 200);
+              break;
+            }
+          }
+          // Use last message timestamp as last_active_at
+          if (msgs.length > 0) {
             var lastMsg = msgs[msgs.length - 1];
             if (lastMsg && lastMsg.ts) update.last_active_at = new Date(lastMsg.ts).getTime();
           }
