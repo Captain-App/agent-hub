@@ -111,7 +111,9 @@ export function getAdminHtml(): string {
       <select id="agentSelect" onchange="onAgentChange()"><option value="">Select agency first</option></select>
     </div>
     <div class="nav">
-      <button class="nav-item active" data-view="memories" onclick="switchView('memories')">Memories</button>
+      <button class="nav-item active" data-view="discover" onclick="switchView('discover')">Discover</button>
+      <div style="border-top:1px solid var(--border);margin:4px 0"></div>
+      <button class="nav-item" data-view="memories" onclick="switchView('memories')">Memories</button>
       <button class="nav-item" data-view="journal" onclick="switchView('journal')">Mutation Journal</button>
       <button class="nav-item" data-view="pins" onclick="switchView('pins')">Context Pins</button>
       <button class="nav-item" data-view="workspace" onclick="switchView('workspace')">Workspace Config</button>
@@ -162,7 +164,7 @@ let idToken = '';
 let currentUser = null;
 let currentAgency = '';
 let currentAgent = '';
-let currentView = 'memories';
+let currentView = 'discover';
 
 // --- API helpers ---
 async function api(method, path, body) {
@@ -273,7 +275,7 @@ async function init() {
       sel.appendChild(opt);
     });
     setStatus('green', currentUser ? currentUser.email : 'Connected');
-    document.getElementById('mainContent').innerHTML = '<div class="empty">Select an agency and agent to begin.</div>';
+    loadView();
   } catch (e) {
     if (e.message.includes('401') || e.message.includes('403')) {
       toast('Access denied', 'error');
@@ -322,8 +324,13 @@ function switchView(view) {
 }
 
 async function loadView() {
+  // Discover view works without agent selection
+  if (currentView === 'discover') {
+    await loadDiscover();
+    return;
+  }
   if (!currentAgency || !currentAgent) {
-    document.getElementById('mainContent').innerHTML = '<div class="empty">Select an agency and agent to begin.</div>';
+    document.getElementById('mainContent').innerHTML = '<div class="empty">Select an agency and agent above to inspect it.</div>';
     return;
   }
   const main = document.getElementById('mainContent');
@@ -346,6 +353,71 @@ async function loadView() {
 
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
+// --- Discover ---
+async function loadDiscover() {
+  var main = document.getElementById('mainContent');
+  main.innerHTML = '<div class="empty"><div class="spinner"></div> Loading...</div>';
+
+  try {
+    // Use D1-backed admin API for instant cross-agent queries
+    var statsRes = await api('GET', '/admin/api/stats');
+    var activityRes = await api('GET', '/admin/api/activity');
+    var agents = activityRes.agents || [];
+
+    var html = '';
+
+    // Stats bar
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-bottom:16px">';
+    html += '<div style="padding:12px;background:var(--bg2);border:1px solid var(--border);border-radius:4px"><div style="font-size:11px;color:var(--text2)">Total Agents</div><div style="font-size:24px;font-weight:600">' + (statsRes.total_agents || 0).toLocaleString() + '</div></div>';
+    html += '<div style="padding:12px;background:var(--bg2);border:1px solid var(--border);border-radius:4px"><div style="font-size:11px;color:var(--text2)">Active (24h)</div><div style="font-size:24px;font-weight:600">' + (statsRes.active_24h || 0) + '</div></div>';
+    html += '<div style="padding:12px;background:var(--bg2);border:1px solid var(--border);border-radius:4px"><div style="font-size:11px;color:var(--text2)">Messages</div><div style="font-size:24px;font-weight:600">' + (statsRes.total_messages || 0).toLocaleString() + '</div></div>';
+    html += '<div style="padding:12px;background:var(--bg2);border:1px solid var(--border);border-radius:4px"><div style="font-size:11px;color:var(--text2)">Memories</div><div style="font-size:24px;font-weight:600">' + (statsRes.total_memories || 0).toLocaleString() + '</div></div>';
+    html += '</div>';
+
+    if (agents.length === 0 && !statsRes.error) {
+      html += '<div class="panel"><div class="panel-body"><div class="empty">No agent activity recorded yet. Activity is indexed as agents are used.</div></div></div>';
+    } else if (statsRes.error) {
+      html += '<div class="panel"><div class="panel-body"><div class="empty">D1 admin index not configured. Deploy with ADMIN_DB binding to enable discovery.</div></div></div>';
+    }
+
+    // Recent agents
+    if (agents.length > 0) {
+      html += '<div class="panel"><div class="panel-header"><h2>Recent Agents</h2><button class="btn btn-sm" onclick="loadDiscover()">Refresh</button></div>';
+      html += '<div class="panel-body no-pad">';
+      html += '<table><tr><th>Agent</th><th>Agency</th><th>Type</th><th>Messages</th><th>Memories</th><th>Last Active</th><th></th></tr>';
+      agents.forEach(function(a) {
+        html += '<tr>';
+        html += '<td class="mono" style="font-size:12px">' + esc((a.agent_id || '').slice(0, 12)) + '...</td>';
+        html += '<td>' + esc(a.agency_id || '') + '</td>';
+        html += '<td><span class="badge badge-blue">' + esc(a.agent_type || '-') + '</span></td>';
+        html += '<td>' + (a.message_count || 0) + '</td>';
+        html += '<td>' + (a.memory_count || 0) + '</td>';
+        html += '<td class="mono" style="font-size:11px;color:var(--text2)">' + (a.last_active_at ? new Date(a.last_active_at).toLocaleString() : '-') + '</td>';
+        html += '<td><button class="btn btn-sm" onclick="selectAgent(&apos;' + esc(a.agency_id || '') + '&apos;,&apos;' + esc(a.agent_id || '') + '&apos;)">Inspect</button></td>';
+        html += '</tr>';
+      });
+      html += '</table></div></div>';
+    }
+
+    main.innerHTML = html;
+  } catch(e) {
+    main.innerHTML = '<div class="panel"><div class="panel-body"><div class="empty">Error: ' + esc(e.message) + '</div></div></div>';
+  }
+}
+
+function selectAgent(agency, agent) {
+  currentAgency = agency;
+  currentAgent = agent;
+  document.getElementById('agencySelect').value = agency;
+  // Trigger agent list load then select the agent
+  onAgencyChange().then(function() {
+    document.getElementById('agentSelect').value = agent;
+    currentAgent = agent;
+    setStatus('green', 'Agent: ' + agent.slice(0, 8) + '...');
+    switchView('memories');
+  });
+}
+
 // --- Memories ---
 async function loadMemories() {
   const data = await action('browseMemories');
@@ -359,8 +431,8 @@ async function loadMemories() {
     data.memories.forEach(m => {
       html += '<tr><td class="mono">' + esc(m.key) + '</td><td class="truncate">' + esc(m.value) + '</td>';
       html += '<td class="mono" style="font-size:11px;color:var(--text2)">' + new Date(m.updatedAt).toLocaleString() + '</td>';
-      html += '<td><button class="btn btn-sm" onclick="editMemory(\\''+esc(m.key)+'\\',\\''+esc(m.value.replace(/'/g,"\\\\'"))+'\\')" title="Edit">Edit</button> ';
-      html += '<button class="btn btn-danger btn-sm" onclick="delMemory(\\''+esc(m.key)+'\\')" title="Delete">Del</button></td></tr>';
+      html += '<td><button class="btn btn-sm" onclick="editMemory(&apos;'+esc(m.key)+'&apos;,&apos;'+esc(m.value)+'&apos;)" title="Edit">Edit</button> ';
+      html += '<button class="btn btn-danger btn-sm" onclick="delMemory(&apos;'+esc(m.key)+'&apos;)" title="Delete">Del</button></td></tr>';
     });
     html += '</table>';
   }
@@ -374,7 +446,7 @@ function showAddMemory(key, value) {
   el.innerHTML = '<div class="panel"><div class="panel-header"><h2>' + (key ? 'Edit' : 'Add') + ' Memory</h2></div><div class="panel-body">' +
     '<div class="form-row"><input id="memKey" placeholder="Key" value="' + esc(key || '') + '" ' + (key ? 'readonly' : '') + '></div>' +
     '<div class="form-row"><textarea id="memVal" placeholder="Value">' + esc(value || '') + '</textarea></div>' +
-    '<div class="form-row"><button class="btn btn-primary" onclick="saveMemory()">Save</button> <button class="btn" onclick="document.getElementById(\\'memoryForm\\').innerHTML=\\'\\'">Cancel</button></div>' +
+    '<div class="form-row"><button class="btn btn-primary" onclick="saveMemory()">Save</button> <button class="btn" onclick="document.getElementById(&apos;memoryForm&apos;).innerHTML=&apos;&apos;">Cancel</button></div>' +
     '</div></div>';
 }
 

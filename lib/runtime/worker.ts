@@ -708,6 +708,53 @@ export const createHandler = (opts: HandlerOptions = {}) => {
   // MCP OAuth callbacks
   router.get("/oauth/agency/:agencyId/callback", handleMcpOAuthCallback);
 
+  // Admin API — D1-backed cross-agent queries
+  router.get("/admin/api/activity", async (_req: IRequest, { env }: RequestContext) => {
+    const db = (env as any).ADMIN_DB;
+    if (!db) return Response.json({ error: "ADMIN_DB not configured", agents: [] });
+    const { results } = await db.prepare(
+      "SELECT * FROM agent_activity ORDER BY last_active_at DESC LIMIT 100"
+    ).all();
+    return Response.json({ agents: results, count: results.length });
+  });
+
+  router.get("/admin/api/stats", async (_req: IRequest, { env }: RequestContext) => {
+    const db = (env as any).ADMIN_DB;
+    if (!db) return Response.json({ error: "ADMIN_DB not configured" });
+    const { results } = await db.prepare(`
+      SELECT
+        COUNT(*) as total_agents,
+        SUM(message_count) as total_messages,
+        SUM(memory_count) as total_memories,
+        SUM(run_count) as total_runs,
+        COUNT(CASE WHEN last_active_at > ? THEN 1 END) as active_24h
+      FROM agent_activity
+    `).bind(Date.now() - 86400000).all();
+    return Response.json(results[0] || {});
+  });
+
+  router.post("/admin/api/activity", async (req: IRequest, { env }: RequestContext) => {
+    const db = (env as any).ADMIN_DB;
+    if (!db) return Response.json({ error: "ADMIN_DB not configured" });
+    const body = await req.json() as any;
+    await db.prepare(`
+      INSERT INTO agent_activity (agent_id, agency_id, agent_type, message_count, memory_count, run_count, last_active_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(agency_id, agent_id) DO UPDATE SET
+        agent_type = excluded.agent_type,
+        message_count = excluded.message_count,
+        memory_count = CASE WHEN excluded.memory_count > 0 THEN excluded.memory_count ELSE memory_count END,
+        run_count = CASE WHEN excluded.run_count > 0 THEN excluded.run_count ELSE run_count END,
+        last_active_at = excluded.last_active_at,
+        updated_at = excluded.updated_at
+    `).bind(
+      body.agent_id, body.agency_id, body.agent_type || null,
+      body.message_count || 0, body.memory_count || 0, body.run_count || 0,
+      body.last_active_at || Date.now(), Date.now()
+    ).run();
+    return Response.json({ ok: true });
+  });
+
   // Admin UI — served from ADMIN_HTML constant (see admin-ui.ts)
   // Debug endpoint — verify a Firebase token and return diagnostics
   router.get("/admin/debug-token", async (req: IRequest) => {
