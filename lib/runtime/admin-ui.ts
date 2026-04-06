@@ -385,11 +385,17 @@ async function loadDiscover() {
       html += '<div class="panel"><div class="panel-body"><div class="empty">D1 admin index not configured. Deploy with ADMIN_DB binding to enable discovery.</div></div></div>';
     }
 
+    // Chat bar (top — most important interaction)
+    html += '<div class="panel"><div class="panel-body" style="padding:8px 16px">';
+    html += '<div class="form-row" style="margin:0"><input id="chatInput" type="text" placeholder="Ask anything... e.g. &quot;agents with memories&quot;, &quot;most active today&quot;, &quot;agents by type&quot;" style="flex:1"> ';
+    html += '<button class="btn btn-primary" onclick="doAdminChat()" id="chatBtn">Ask</button></div>';
+    html += '<div id="chatResult"></div></div></div>';
+
     // Search bar
     if ((statsRes.total_agents || 0) > 0 || discoverSearch) {
       html += '<div class="panel"><div class="panel-body" style="padding:8px 16px">';
-      html += '<div class="form-row" style="margin:0"><input id="discoverSearchInput" type="text" placeholder="Search agents by ID, type, or agency..." value="' + esc(discoverSearch) + '" style="flex:1"> ';
-      html += '<button class="btn btn-primary" onclick="doDiscoverSearch()">Search</button>';
+      html += '<div class="form-row" style="margin:0"><input id="discoverSearchInput" type="text" placeholder="Filter table by ID, type, user, estate..." value="' + esc(discoverSearch) + '" style="flex:1"> ';
+      html += '<button class="btn" onclick="doDiscoverSearch()">Filter</button>';
       if (discoverSearch) html += ' <button class="btn" onclick="discoverSearch=&apos;&apos;;loadDiscover()">Clear</button>';
       html += '</div></div></div>';
     }
@@ -417,12 +423,6 @@ async function loadDiscover() {
     } else if (discoverSearch) {
       html += '<div class="panel"><div class="panel-body"><div class="empty">No agents matching "' + esc(discoverSearch) + '"</div></div></div>';
     }
-
-    // Chat bar
-    html += '<div class="panel"><div class="panel-header"><h2>Ask</h2></div>';
-    html += '<div class="panel-body"><div class="form-row" style="margin:0"><input id="chatInput" type="text" placeholder="Ask a question... e.g. &quot;which agents have memories?&quot; or &quot;most active agent today&quot;" style="flex:1"> ';
-    html += '<button class="btn btn-primary" onclick="doAdminChat()" id="chatBtn">Ask</button></div>';
-    html += '<div id="chatResult"></div></div></div>';
 
     main.innerHTML = html;
     // Wire up enter keys
