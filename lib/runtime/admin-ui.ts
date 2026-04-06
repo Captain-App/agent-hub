@@ -372,10 +372,11 @@ async function loadDiscover() {
     html += '<div style="padding:12px;background:var(--bg2);border:1px solid var(--border);border-radius:4px"><div style="font-size:11px;color:var(--text2)">Active (24h)</div><div style="font-size:24px;font-weight:600">' + (statsRes.active_24h || 0) + '</div></div>';
     html += '<div style="padding:12px;background:var(--bg2);border:1px solid var(--border);border-radius:4px"><div style="font-size:11px;color:var(--text2)">Messages</div><div style="font-size:24px;font-weight:600">' + (statsRes.total_messages || 0).toLocaleString() + '</div></div>';
     html += '<div style="padding:12px;background:var(--bg2);border:1px solid var(--border);border-radius:4px"><div style="font-size:11px;color:var(--text2)">Memories</div><div style="font-size:24px;font-weight:600">' + (statsRes.total_memories || 0).toLocaleString() + '</div></div>';
+    html += '<div style="padding:12px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;display:flex;align-items:center;justify-content:center"><button class="btn btn-sm" onclick="runBackfill()">Re-index</button></div>';
     html += '</div>';
 
     if (agents.length === 0 && !statsRes.error) {
-      html += '<div class="panel"><div class="panel-body"><div class="empty">No agent activity recorded yet. Activity is indexed as agents are used.</div></div></div>';
+      html += '<div class="panel"><div class="panel-body"><div class="empty">No agent activity indexed yet.<br><br><button class="btn btn-primary" onclick="runBackfill()">Backfill from existing agents</button></div></div></div>';
     } else if (statsRes.error) {
       html += '<div class="panel"><div class="panel-body"><div class="empty">D1 admin index not configured. Deploy with ADMIN_DB binding to enable discovery.</div></div></div>';
     }
@@ -402,6 +403,41 @@ async function loadDiscover() {
     main.innerHTML = html;
   } catch(e) {
     main.innerHTML = '<div class="panel"><div class="panel-body"><div class="empty">Error: ' + esc(e.message) + '</div></div></div>';
+  }
+}
+
+async function runBackfill() {
+  var main = document.getElementById('mainContent');
+  main.innerHTML = '<div class="empty"><div class="spinner"></div> Backfilling index... <span id="backfillProgress">0 agents</span></div>';
+  try {
+    var agenciesRes = await api('GET', '/agencies');
+    var agencies = Array.isArray(agenciesRes) ? agenciesRes : (agenciesRes.agencies || []);
+    var indexed = 0;
+    for (var ag of agencies) {
+      var agId = ag.id || ag.name || ag;
+      var agentsRes = await api('GET', '/agency/' + agId + '/agents');
+      var agents = Array.isArray(agentsRes) ? agentsRes : (agentsRes.agents || []);
+      // Batch: send 20 agents at a time to the activity endpoint
+      for (var i = 0; i < agents.length; i += 20) {
+        var batch = agents.slice(i, i + 20);
+        await Promise.all(batch.map(function(a) {
+          var agentId = a.id || a.name || a;
+          var createdAt = a.createdAt ? new Date(a.createdAt).getTime() : Date.now();
+          return api('POST', '/admin/api/activity', {
+            agent_id: agentId, agency_id: agId, agent_type: a.agentType || null,
+            message_count: 0, memory_count: 0, run_count: 0, last_active_at: createdAt
+          });
+        }));
+        indexed += batch.length;
+        var el = document.getElementById('backfillProgress');
+        if (el) el.textContent = indexed.toLocaleString() + ' agents';
+      }
+    }
+    toast('Indexed ' + indexed.toLocaleString() + ' agents');
+    loadDiscover();
+  } catch(e) {
+    toast('Backfill failed: ' + e.message, 'error');
+    loadDiscover();
   }
 }
 

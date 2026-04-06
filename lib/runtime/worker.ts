@@ -755,6 +755,58 @@ export const createHandler = (opts: HandlerOptions = {}) => {
     return Response.json({ ok: true });
   });
 
+  // Admin backfill — scan all agents and populate D1 index in one shot
+  router.post("/admin/api/backfill", async (_req: IRequest, { env, ctx: cfCtx }: RequestContext) => {
+    const db = (env as any).ADMIN_DB;
+    if (!db) return Response.json({ error: "ADMIN_DB not configured" });
+
+    const agencyDO = (env as any).AGENCY;
+    if (!agencyDO) return Response.json({ error: "No AGENCY binding" });
+
+    // List agencies via the router itself (internal fetch)
+    const agenciesRes = await listAgencies(
+      { url: "http://internal/agencies", method: "GET", headers: new Headers() } as any,
+      { env: env as any, ctx: cfCtx, opts: {} as any }
+    );
+    const agencies = ((await agenciesRes.json()) as any).agencies || [];
+
+    let indexed = 0;
+    let errors = 0;
+
+    for (const ag of agencies) {
+      const agId = ag.id || ag.name;
+      try {
+        const agentsRes = await listAgents(
+          { params: { agencyId: agId }, url: `http://internal/agency/${agId}/agents`, method: "GET", headers: new Headers() } as any,
+          { env: env as any, ctx: cfCtx, opts: {} as any }
+        );
+        const agents = ((await agentsRes.json()) as any).agents || [];
+
+        // Batch upsert in chunks of 20
+        for (let i = 0; i < agents.length; i += 20) {
+          const batch = agents.slice(i, i + 20);
+          const stmts = batch.map((a: any) => {
+            const agentId = a.id || a.name;
+            const createdAt = a.createdAt ? new Date(a.createdAt).getTime() : Date.now();
+            return db.prepare(
+              `INSERT INTO agent_activity (agent_id, agency_id, agent_type, message_count, memory_count, run_count, last_active_at, updated_at)
+               VALUES (?, ?, ?, 0, 0, 0, ?, ?)
+               ON CONFLICT(agency_id, agent_id) DO UPDATE SET
+                 agent_type = excluded.agent_type,
+                 updated_at = excluded.updated_at`
+            ).bind(agentId, agId, a.agentType || null, createdAt, Date.now());
+          });
+          await db.batch(stmts);
+          indexed += batch.length;
+        }
+      } catch (e) {
+        errors++;
+      }
+    }
+
+    return Response.json({ indexed, errors, agencies: agencies.length });
+  });
+
   // Admin UI — served from ADMIN_HTML constant (see admin-ui.ts)
   // Debug endpoint — verify a Firebase token and return diagnostics
   router.get("/admin/debug-token", async (req: IRequest) => {
