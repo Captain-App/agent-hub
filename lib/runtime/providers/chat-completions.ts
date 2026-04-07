@@ -231,14 +231,14 @@ export function makeChatCompletions(
 
           const json = (await res.json()) as {
             choices: Array<{ message: OAChatMsg; finish_reason?: string }>;
-            usage: { prompt_tokens: number; completion_tokens: number };
+            usage: { prompt_tokens?: number; completion_tokens?: number; input_tokens?: number; output_tokens?: number };
           };
           const choice = json.choices?.[0];
           const message = fromOA(choice);
           const usage = json.usage
             ? {
-                promptTokens: json.usage.prompt_tokens,
-                completionTokens: json.usage.completion_tokens
+                promptTokens: json.usage.prompt_tokens ?? json.usage.input_tokens ?? 0,
+                completionTokens: json.usage.completion_tokens ?? json.usage.output_tokens ?? 0
               }
             : undefined;
           const finishReason = choice?.finish_reason;
@@ -382,8 +382,8 @@ export function makeChatCompletions(
         message,
         usage: usage
           ? {
-              promptTokens: usage.prompt_tokens,
-              completionTokens: usage.completion_tokens
+              promptTokens: usage.prompt_tokens ?? usage.input_tokens ?? 0,
+              completionTokens: usage.completion_tokens ?? usage.output_tokens ?? 0
             }
           : undefined
       };
