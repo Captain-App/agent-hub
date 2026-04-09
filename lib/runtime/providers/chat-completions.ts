@@ -288,7 +288,14 @@ export function makeChatCompletions(
         name: string;
         arguments: string;
       }> = [];
-      let usage: { prompt_tokens: number; completion_tokens: number } | undefined;
+      let usage:
+        | {
+            prompt_tokens?: number;
+            completion_tokens?: number;
+            input_tokens?: number;
+            output_tokens?: number;
+          }
+        | undefined;
 
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
