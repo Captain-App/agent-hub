@@ -13,7 +13,7 @@ import type {
   AgentEnv,
   CfCtx,
 } from "../types";
-import { Agent, type AgentContext, getAgentByName } from "agents";
+import { Agent, type AgentContext, type Connection, getAgentByName } from "agents";
 import { type AgentEvent, AgentEventType } from "../events";
 import { Store } from "./store";
 import { PersistedObject } from "../persisted";
@@ -36,6 +36,23 @@ export type Info = {
   pendingToolCalls?: ToolCall[];
   blueprint?: AgentBlueprint;
 };
+
+type ClientConnectionState = {
+  clientKind?: string;
+  clientPlatform?: string;
+  clientLabel?: string;
+  connectedAt?: number;
+  userAgent?: string;
+};
+
+type AgentClientInfo = {
+  clientKind?: string;
+  clientPlatform?: string;
+  clientLabel?: string;
+  connectedAt?: number;
+  userAgent?: string;
+};
+
 export abstract class HubAgent<
   Env extends AgentEnv = AgentEnv,
 > extends Agent<Env> {
@@ -139,6 +156,19 @@ export abstract class HubAgent<
     };
   }
 
+  onConnect(connection: Connection, ctx: { request: Request }): void {
+    const url = new URL(ctx.request.url);
+    const connectionState: ClientConnectionState = {
+      clientKind: url.searchParams.get("client_kind") || undefined,
+      clientPlatform: url.searchParams.get("client_platform") || undefined,
+      clientLabel: url.searchParams.get("client_label") || undefined,
+      connectedAt: Date.now(),
+      userAgent: ctx.request.headers.get("user-agent") || undefined,
+    };
+
+    connection.setState(connectionState);
+  }
+
   get isPaused() {
     return this.runState.status === "paused";
   }
@@ -164,8 +194,22 @@ export abstract class HubAgent<
         }
         return new Response("method not allowed", { status: 405 });
       case "/connections":
+        const clients = [...this.getConnections()].map((connection) => {
+          const state = (connection.state ?? {}) as ClientConnectionState;
+          const info: AgentClientInfo = {};
+
+          if (state.clientKind) info.clientKind = state.clientKind;
+          if (state.clientPlatform) info.clientPlatform = state.clientPlatform;
+          if (state.clientLabel) info.clientLabel = state.clientLabel;
+          if (typeof state.connectedAt === "number") info.connectedAt = state.connectedAt;
+          if (state.userAgent) info.userAgent = state.userAgent;
+
+          return info;
+        });
+
         return Response.json({
-          connections: [...this.getConnections()].length,
+          connections: clients.length,
+          clientDetails: clients,
         });
       default:
         return new Response("not found", { status: 404 });

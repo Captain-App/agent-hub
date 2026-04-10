@@ -736,13 +736,27 @@ export class Agency extends Agent<AgentEnv> {
           const stub = await getAgentByName(this.exports.HubAgent, row.id);
           const res = await stub.fetch(new Request("http://do/connections"));
           if (res.ok) {
-            const data = await res.json<{ connections: number }>();
-            return { agentId: row.id, agentType: row.type, clients: data.connections };
+            const data = await res.json<{
+              connections: number;
+              clientDetails?: Array<{
+                clientKind?: string;
+                clientPlatform?: string;
+                clientLabel?: string;
+                connectedAt?: number;
+                userAgent?: string;
+              }>;
+            }>();
+            return {
+              agentId: row.id,
+              agentType: row.type,
+              clients: data.connections,
+              clientDetails: data.clientDetails || [],
+            };
           }
         } catch {
           /* evicted/destroyed DO — skip */
         }
-        return { agentId: row.id, agentType: row.type, clients: 0 };
+        return { agentId: row.id, agentType: row.type, clients: 0, clientDetails: [] };
       })
     );
 
