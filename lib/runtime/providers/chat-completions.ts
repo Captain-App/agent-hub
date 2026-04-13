@@ -89,7 +89,7 @@ function toOA(req: ModelRequest) {
     model: parseModel(req.model),
     messages: msgs,
     temperature: req.temperature,
-    max_tokens: req.maxTokens,
+    max_tokens: req.maxTokens ?? 16384,
     stop: req.stop,
     tools,
     tool_choice: req.toolChoice ?? "auto"
