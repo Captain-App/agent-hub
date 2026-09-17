@@ -1,4 +1,4 @@
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { z } from "zod";
 import type { ToolContext, ToolJsonSchema, Tool } from "./types";
 
 export type ToolResult = string | object | null;
@@ -50,10 +50,13 @@ export function tool<TSchema extends ZodSchema | ToolJsonSchema>(config: {
 }): Tool<TSchema extends ZodSchema<infer T> ? T : unknown> {
   let jsonSchema: ToolJsonSchema;
   if (isZodSchema(config.inputSchema)) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    jsonSchema = (zodToJsonSchema as any)(config.inputSchema, {
-      $refStrategy: "none",
-      target: "openApi3"
+    // Zod 4 emits JSON Schema itself; inline reused schemas and never throw
+    // on a shape JSON Schema cannot express (it becomes `{}`), so a tool's
+    // parameters are always a plain OpenAPI-style object schema.
+    jsonSchema = z.toJSONSchema(config.inputSchema as z.ZodType, {
+      target: "openapi-3.0",
+      reused: "inline",
+      unrepresentable: "any"
     }) as ToolJsonSchema;
     delete jsonSchema.$schema;
   } else {
