@@ -1111,7 +1111,11 @@ Rules:
           const header = req.headers.get("Authorization") || "";
           const claims = header.startsWith("Bearer ")
             ? await verifyFirebaseToken(header.slice(7)) : null;
-          if (!claims || !Array.isArray(claims.roles) || !claims.roles.includes("god")) {
+          const expectedProject = url.hostname.startsWith("dev.") ||
+            url.hostname.includes("-dev.")
+            ? "co2-target-asset-tracking-dev" : "co2-target-asset-tracking";
+          if (!claims || claims.aud !== expectedProject ||
+              !Array.isArray(claims.roles) || !claims.roles.includes("god")) {
             return withCors(new Response("Forbidden", { status: 403 }));
           }
         }
