@@ -745,6 +745,10 @@ export class Agency extends Agent<AgentEnv> {
                 clientKind?: string;
                 clientPlatform?: string;
                 clientLabel?: string;
+                clientSessionId?: string;
+                appVersion?: string;
+                gitSha?: string;
+                patchNumber?: number;
                 connectedAt?: number;
                 userAgent?: string;
               }>;

@@ -41,6 +41,10 @@ type ClientConnectionState = {
   clientKind?: string;
   clientPlatform?: string;
   clientLabel?: string;
+  clientSessionId?: string;
+  appVersion?: string;
+  gitSha?: string;
+  patchNumber?: number;
   connectedAt?: number;
   userAgent?: string;
 };
@@ -49,6 +53,10 @@ type AgentClientInfo = {
   clientKind?: string;
   clientPlatform?: string;
   clientLabel?: string;
+  clientSessionId?: string;
+  appVersion?: string;
+  gitSha?: string;
+  patchNumber?: number;
   connectedAt?: number;
   userAgent?: string;
 };
@@ -162,6 +170,12 @@ export abstract class HubAgent<
       clientKind: url.searchParams.get("client_kind") || undefined,
       clientPlatform: url.searchParams.get("client_platform") || undefined,
       clientLabel: url.searchParams.get("client_label") || undefined,
+      clientSessionId: url.searchParams.get("client_session_id") || undefined,
+      appVersion: url.searchParams.get("app_version") || undefined,
+      gitSha: url.searchParams.get("git_sha") || undefined,
+      patchNumber: url.searchParams.has("patch_number")
+        ? Number(url.searchParams.get("patch_number"))
+        : undefined,
       connectedAt: Date.now(),
       userAgent: ctx.request.headers.get("user-agent") || undefined,
     };
@@ -201,6 +215,10 @@ export abstract class HubAgent<
           if (state.clientKind) info.clientKind = state.clientKind;
           if (state.clientPlatform) info.clientPlatform = state.clientPlatform;
           if (state.clientLabel) info.clientLabel = state.clientLabel;
+          if (state.clientSessionId) info.clientSessionId = state.clientSessionId;
+          if (state.appVersion) info.appVersion = state.appVersion;
+          if (state.gitSha) info.gitSha = state.gitSha;
+          if (state.patchNumber !== undefined) info.patchNumber = state.patchNumber;
           if (typeof state.connectedAt === "number") info.connectedAt = state.connectedAt;
           if (state.userAgent) info.userAgent = state.userAgent;
 

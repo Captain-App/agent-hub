@@ -1,4 +1,4 @@
-import { d as AgentPlugin } from './types-DkpVjXSl.js';
+import { d as AgentPlugin } from './types-CSMJ2gVv.js';
 
 /**
  * Resolves `$VAR_NAME` patterns in tool arguments using agent vars.
@@ -47,4 +47,4 @@ declare namespace index {
   export { type index_Todo as Todo, index_context as context, index_hitl as hitl, index_logger as logger, index_planning as planning, index_subagentReporter as subagentReporter, index_subagents as subagents, index_vars as vars };
 }
 
-export { type Todo as T, subagents as a, context as c, hitl as h, index as i, logger as l, planning as p, subagentReporter as s, vars as v };
+export { type Todo as T, subagentReporter as a, context as c, hitl as h, index as i, logger as l, planning as p, subagents as s, vars as v };
