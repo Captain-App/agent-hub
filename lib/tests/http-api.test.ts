@@ -16,6 +16,15 @@ function createTestClient() {
 }
 
 describe("HTTP API", () => {
+  it("requires an operator token for cross-user client diagnostics", async () => {
+    const response = await SELF.fetch("http://localhost/agency/default/agent/any/action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-SECRET": "shared-app-secret" },
+      body: JSON.stringify({ type: "readClientDiagnostics", clientSessionId: "tab" }),
+    });
+    expect(response.status).toBe(403);
+  });
+
   describe("plugins endpoint", () => {
     it("should list registered plugins and tools", async () => {
       const client = createTestClient();

@@ -126,33 +126,33 @@ function decodeJwtPayload(part: string): JwtPayload {
   return JSON.parse(atob(b64));
 }
 
-async function verifyFirebaseToken(token: string): Promise<boolean> {
+async function verifyFirebaseToken(token: string): Promise<JwtPayload | null> {
   try {
     const parts = token.split(".");
-    if (parts.length !== 3) return false;
+    if (parts.length !== 3) return null;
 
     const header = decodeJwtHeader(parts[0]);
     const payload = decodeJwtPayload(parts[1]);
 
     // Check algorithm
-    if (header.alg !== "RS256") return false;
+    if (header.alg !== "RS256") return null;
 
     // Check issuer matches a known Firebase project
     const project = FIREBASE_PROJECTS.find(
       (p) => payload.iss === `https://securetoken.google.com/${p}` && payload.aud === p
     );
-    if (!project) return false;
+    if (!project) return null;
 
     // Check expiry (allow 5 min clock skew)
     const now = Math.floor(Date.now() / 1000);
-    if (!payload.exp || payload.exp < now - 300) return false;
-    if (!payload.iat || payload.iat > now + 300) return false;
-    if (!payload.sub) return false;
+    if (!payload.exp || payload.exp < now - 300) return null;
+    if (!payload.iat || payload.iat > now + 300) return null;
+    if (!payload.sub) return null;
 
     // Verify signature with Google's public key
     const certs = await fetchGoogleCerts();
     const key = header.kid ? certs[header.kid] : undefined;
-    if (!key) return false;
+    if (!key) return null;
 
     let sigB64 = parts[2].replace(/-/g, "+").replace(/_/g, "/");
     while (sigB64.length % 4) sigB64 += "=";
@@ -162,9 +162,10 @@ async function verifyFirebaseToken(token: string): Promise<boolean> {
     );
     const dataBytes = new TextEncoder().encode(parts[0] + "." + parts[1]);
 
-    return await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, signatureBytes, dataBytes);
+    return await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, signatureBytes, dataBytes)
+      ? payload : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -582,11 +583,11 @@ const getMetrics = async (req: IRequest, { ctx }: RequestContext) => {
 const getPresence = async (req: IRequest, { ctx, env }: RequestContext) => {
   const notFound = await requireAgency(req.params.agencyId, env);
   if (notFound) return notFound;
+
   const agencyStub = await getAgencyStub(req.params.agencyId, ctx);
-  const doUrl = new URL(req.url);
-  return agencyStub.fetch(
-    new Request(`http://do/presence${doUrl.search}`)
-  );
+  // Forward query string (e.g. ?uid=xxx) to Agency DO
+  const doUrl = createDoUrl(req, "/presence");
+  return agencyStub.fetch(new Request(doUrl));
 };
 
 const handleAgencyWebSocket = async (req: IRequest, { ctx }: RequestContext) => {
@@ -704,6 +705,9 @@ export const createHandler = (opts: HandlerOptions = {}) => {
 
   // Metrics
   router.get("/agency/:agencyId/metrics", getMetrics);
+
+  // Presence (which agents have connected app clients)
+  router.get("/agency/:agencyId/presence", getPresence);
 
   // Agency WebSocket (for UI event subscriptions)
   router.get("/agency/:agencyId/ws", handleAgencyWebSocket);
@@ -1096,6 +1100,26 @@ Rules:
   return {
     async fetch(req: Request, env: HandlerEnv, ctx: CfCtx) {
       const url = new URL(req.url);
+
+      // A diagnostic read reaches another user's live tab. The shared app
+      // secret is embedded in web builds, so require a verified god-role
+      // Firebase token even when that secret is present.
+      if (req.method === "POST" &&
+          /^\/agency\/[^/]+\/agent\/[^/]+\/action\/?$/.test(url.pathname)) {
+        const body = await req.clone().json().catch(() => null) as { type?: string } | null;
+        if (body?.type === "readClientDiagnostics") {
+          const header = req.headers.get("Authorization") || "";
+          const claims = header.startsWith("Bearer ")
+            ? await verifyFirebaseToken(header.slice(7)) : null;
+          const expectedProject = url.hostname.startsWith("dev.") ||
+            url.hostname.includes("-dev.")
+            ? "co2-target-asset-tracking-dev" : "co2-target-asset-tracking";
+          if (!claims || claims.aud !== expectedProject ||
+              !Array.isArray(claims.roles) || !claims.roles.includes("god")) {
+            return withCors(new Response("Forbidden", { status: 403 }));
+          }
+        }
+      }
 
       // CORS preflight
       if (req.method === "OPTIONS") {
