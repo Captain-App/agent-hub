@@ -1100,6 +1100,29 @@ Rules:
   return {
     async fetch(req: Request, env: HandlerEnv, ctx: CfCtx) {
       const url = new URL(req.url);
+      // Never accept identity headers from the network. Only the verified
+      // Firebase handshake/invoke path below can populate them.
+      const headers = new Headers(req.headers);
+      headers.delete("X-Hub-Verified-User");
+      req = new Request(req, { headers });
+      const agentMatch = url.pathname.match(/^\/agency\/[^/]+\/agent\/([^/]+)(?:\/(.*))?$/);
+      const isSessionSocket = req.headers.get("Upgrade")?.toLowerCase() === "websocket" && url.searchParams.get("client_protocol") === "2";
+      const invokeBody = req.method === "POST" && agentMatch?.[2] === "invoke"
+        ? await req.clone().json().catch(() => null) as { origin?: unknown } | null : null;
+      const isAppInvoke = req.method === "POST" && agentMatch?.[2] === "invoke" && /^co2-(?:admin-)?assistant-/.test(agentMatch[1]);
+      if (isAppInvoke && !invokeBody?.origin) return withCors(new Response("Client update required: message origin missing", { status: 409 }));
+      if (isSessionSocket || invokeBody?.origin) {
+        const token = isSessionSocket ? url.searchParams.get("firebase_token") : req.headers.get("Authorization")?.replace(/^Bearer /, "");
+        const claims = token ? await verifyFirebaseToken(token) : null;
+        const expectedProject = url.hostname.startsWith("dev.") || url.hostname.includes("-dev.")
+          ? "co2-target-asset-tracking-dev" : "co2-target-asset-tracking";
+        const agentId = agentMatch ? decodeURIComponent(agentMatch[1]) : "";
+        const uid = claims?.sub;
+        const ownsConversation = typeof uid === "string" && ["co2-assistant-", "co2-admin-assistant-"].some(prefix => agentId === prefix + uid || agentId.startsWith(prefix + uid + "-"));
+        if (!claims || claims.aud !== expectedProject || !ownsConversation) return withCors(new Response("Forbidden session identity", { status: 403 }));
+        headers.set("X-Hub-Verified-User", uid!);
+        req = new Request(req, { headers });
+      }
 
       // A diagnostic read reaches another user's live tab. The shared app
       // secret is embedded in web builds, so require a verified god-role
@@ -1107,7 +1130,7 @@ Rules:
       if (req.method === "POST" &&
           /^\/agency\/[^/]+\/agent\/[^/]+\/action\/?$/.test(url.pathname)) {
         const body = await req.clone().json().catch(() => null) as { type?: string } | null;
-        if (["readClientDiagnostics", "readClientContext", "executeClientAction", "captureClientScreenshot"].includes(body?.type ?? "")) {
+        if (["readClientDiagnostics", "readClientContext", "executeClientAction", "captureClientScreenshot", "listClientSessions"].includes(body?.type ?? "")) {
           const header = req.headers.get("Authorization") || "";
           const claims = header.startsWith("Bearer ")
             ? await verifyFirebaseToken(header.slice(7)) : null;
@@ -1135,7 +1158,7 @@ Rules:
       const providedSecret = req.headers.get("X-SECRET") || url.searchParams.get("key");
       const secret = process.env.SECRET;
 
-      let authed = !secret || isOAuthCallback || isAdminPage;
+      let authed = !secret || isOAuthCallback || isAdminPage || req.headers.has("X-Hub-Verified-User");
 
       // Check legacy secret
       if (!authed && providedSecret && secret && secureCompare(providedSecret, secret)) {
