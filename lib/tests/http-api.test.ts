@@ -16,11 +16,11 @@ function createTestClient() {
 }
 
 describe("HTTP API", () => {
-  it("requires an operator token for cross-user client diagnostics", async () => {
+  it.each(["readClientDiagnostics", "readClientContext", "executeClientAction", "captureClientScreenshot"])("requires an operator token for %s", async (type) => {
     const response = await SELF.fetch("http://localhost/agency/default/agent/any/action", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-SECRET": "shared-app-secret" },
-      body: JSON.stringify({ type: "readClientDiagnostics", clientSessionId: "tab" }),
+      body: JSON.stringify({ type, clientSessionId: "tab" }),
     });
     expect(response.status).toBe(403);
   });
