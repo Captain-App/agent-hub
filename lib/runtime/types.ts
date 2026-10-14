@@ -15,6 +15,14 @@ export type RunStatus =
   | "canceled"
   | "error";
 
+export type MessageOrigin = {
+  clientSessionId: string;
+  messageId: string;
+  userId: string;
+  currentRoute?: string;
+  contextRevision?: string;
+};
+
 /** Mutable state tracking the progress of an agent run. */
 export type RunState = {
   status: RunStatus;
@@ -56,6 +64,7 @@ export type ToolMeta = {
 export type ChatMessageBase = {
   /** Timestamp when the message was created (ISO string). */
   ts?: string;
+  origin?: MessageOrigin;
 };
 
 /** A block of content within a multimodal message. */
@@ -82,6 +91,7 @@ export interface Attachment {
 
 /** Request body for the `/invoke` endpoint. */
 export interface InvokeBody {
+  origin?: MessageOrigin;
   threadId?: string;
   messages?: ChatMessage[];
   files?: Record<string, string>;
@@ -202,6 +212,7 @@ export interface AgentEnv {
 
 /** Context passed to plugin hooks, providing access to the agent and tool registration. */
 export type PluginContext = {
+  sourceClient?: { connectionId: string; clientSessionId: string; userId: string };
   agent: HubAgent;
   env: AgentEnv;
   registerTool: <T>(tool: Tool<T>) => void;

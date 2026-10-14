@@ -245,6 +245,23 @@ type Info = {
     agentType: string;
     pendingToolCalls?: ToolCall[];
     blueprint?: AgentBlueprint;
+    activeOrigin?: MessageOrigin;
+    queuedInvocations?: InvokeBody[];
+    acceptedMessageIds?: string[];
+};
+type ClientConnectionState = {
+    userId?: string;
+    clientProtocol?: number;
+    currentRoute?: string;
+    clientKind?: string;
+    clientPlatform?: string;
+    clientLabel?: string;
+    clientSessionId?: string;
+    appVersion?: string;
+    gitSha?: string;
+    patchNumber?: number;
+    connectedAt?: number;
+    userAgent?: string;
 };
 declare abstract class HubAgent<Env extends AgentEnv = AgentEnv> extends Agent<Env> {
     protected _tools: Record<string, Tool<any>>;
@@ -275,6 +292,25 @@ declare abstract class HubAgent<Env extends AgentEnv = AgentEnv> extends Agent<E
     onConnect(connection: Connection, ctx: {
         request: Request;
     }): void;
+    clientSessions(userId?: string): {
+        connectionId: string;
+        userId?: string;
+        clientProtocol?: number;
+        currentRoute?: string;
+        clientKind?: string;
+        clientPlatform?: string;
+        clientLabel?: string;
+        clientSessionId?: string;
+        appVersion?: string;
+        gitSha?: string;
+        patchNumber?: number;
+        connectedAt?: number;
+        userAgent?: string;
+    }[];
+    sendToClientSession(sessionId: string, message: string, userId?: string): string;
+    onMessage(connection: Connection<ClientConnectionState>, message: string | ArrayBuffer): Promise<void>;
+    private advanceQueuedInvocation;
+    private startInvocation;
     get isPaused(): boolean;
     onRequest(req: Request): Promise<Response>;
     scheduleStep(): Promise<void>;
@@ -465,6 +501,13 @@ declare class Agency extends Agent<AgentEnv> {
 
 /** Lifecycle status of an agent run. */
 type RunStatus = "idle" | "registered" | "running" | "paused" | "completed" | "canceled" | "error";
+type MessageOrigin = {
+    clientSessionId: string;
+    messageId: string;
+    userId: string;
+    currentRoute?: string;
+    contextRevision?: string;
+};
 /** Mutable state tracking the progress of an agent run. */
 type RunState = {
     status: RunStatus;
@@ -500,6 +543,7 @@ type ToolMeta = {
 type ChatMessageBase = {
     /** Timestamp when the message was created (ISO string). */
     ts?: string;
+    origin?: MessageOrigin;
 };
 /** A block of content within a multimodal message. */
 type ContentBlock = {
@@ -538,6 +582,7 @@ interface Attachment {
 }
 /** Request body for the `/invoke` endpoint. */
 interface InvokeBody {
+    origin?: MessageOrigin;
     threadId?: string;
     messages?: ChatMessage[];
     files?: Record<string, string>;
@@ -654,6 +699,11 @@ interface AgentEnv {
 }
 /** Context passed to plugin hooks, providing access to the agent and tool registration. */
 type PluginContext = {
+    sourceClient?: {
+        connectionId: string;
+        clientSessionId: string;
+        userId: string;
+    };
     agent: HubAgent;
     env: AgentEnv;
     registerTool: <T>(tool: Tool<T>) => void;
@@ -744,4 +794,4 @@ type CfCtx = ExecutionContext & {
     exports: Exports;
 };
 
-export { type AgentBlueprint as A, type AgentEvent as B, type ChatMessage as C, type CustomEventData as D, type Exports as E, type AgentEventData as F, type FSEntry as G, HubAgent as H, type InvokeBody as I, type AgentFSContext as J, AgentFileSystem as K, LegacyEventTypeMap as L, type ModelResult as M, type Provider as P, type RunStatus as R, type SubagentLinkStatus as S, type ToolCall as T, type VarHint as V, type ModelRequest as a, type CfCtx as b, type Tool as c, type AgentPlugin as d, Agency as e, type ToolJsonSchema as f, type ToolContext as g, ModelPlanBuilder as h, type RunState as i, type AgentState as j, type ApproveBody as k, type ToolMeta as l, type ChatMessageBase as m, type ContentBlock as n, type Attachment as o, type ThreadRequestContext as p, type ThreadMetadata as q, type CreateThreadRequest as r, type SubagentLink as s, type AnalyticsEngineDataset as t, type AgentEnv as u, type PluginContext as v, parseModel as w, type AgencyRelayEvent as x, type Info as y, AgentEventType as z };
+export { type AgentBlueprint as A, type ClientConnectionState as B, type ChatMessage as C, AgentEventType as D, type Exports as E, type AgentEvent as F, type CustomEventData as G, HubAgent as H, type InvokeBody as I, type AgentEventData as J, type FSEntry as K, LegacyEventTypeMap as L, type ModelResult as M, type AgentFSContext as N, AgentFileSystem as O, type Provider as P, type RunStatus as R, type SubagentLinkStatus as S, type ToolCall as T, type VarHint as V, type ModelRequest as a, type CfCtx as b, type Tool as c, type AgentPlugin as d, Agency as e, type ToolJsonSchema as f, type ToolContext as g, ModelPlanBuilder as h, type MessageOrigin as i, type RunState as j, type AgentState as k, type ApproveBody as l, type ToolMeta as m, type ChatMessageBase as n, type ContentBlock as o, type Attachment as p, type ThreadRequestContext as q, type ThreadMetadata as r, type CreateThreadRequest as s, type SubagentLink as t, type AnalyticsEngineDataset as u, type AgentEnv as v, type PluginContext as w, parseModel as x, type AgencyRelayEvent as y, type Info as z };

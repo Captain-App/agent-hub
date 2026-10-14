@@ -12,6 +12,7 @@ import type {
   AgentBlueprint,
   AgentEnv,
   CfCtx,
+  MessageOrigin,
 } from "../types";
 import { Agent, type AgentContext, type Connection, getAgentByName } from "agents";
 import { type AgentEvent, AgentEventType } from "../events";
@@ -35,9 +36,15 @@ export type Info = {
   agentType: string;
   pendingToolCalls?: ToolCall[];
   blueprint?: AgentBlueprint;
+  activeOrigin?: MessageOrigin;
+  queuedInvocations?: InvokeBody[];
+  acceptedMessageIds?: string[];
 };
 
-type ClientConnectionState = {
+export type ClientConnectionState = {
+  userId?: string;
+  clientProtocol?: number;
+  currentRoute?: string;
   clientKind?: string;
   clientPlatform?: string;
   clientLabel?: string;
@@ -167,6 +174,9 @@ export abstract class HubAgent<
   onConnect(connection: Connection, ctx: { request: Request }): void {
     const url = new URL(ctx.request.url);
     const connectionState: ClientConnectionState = {
+      userId: ctx.request.headers.get("X-Hub-Verified-User") || undefined,
+      clientProtocol: Number(url.searchParams.get("client_protocol") || "0"),
+      currentRoute: url.searchParams.get("current_route") || undefined,
       clientKind: url.searchParams.get("client_kind") || undefined,
       clientPlatform: url.searchParams.get("client_platform") || undefined,
       clientLabel: url.searchParams.get("client_label") || undefined,
@@ -181,6 +191,74 @@ export abstract class HubAgent<
     };
 
     connection.setState(connectionState);
+    if (connectionState.userId && connectionState.clientProtocol === 2) {
+      connection.send(JSON.stringify({ type: "CLIENT_SESSION_READY", data: {
+        clientSessionId: connectionState.clientSessionId, clientProtocol: 2,
+      } }));
+    }
+  }
+
+  clientSessions(userId?: string) {
+    return [...this.getConnections<ClientConnectionState>()]
+      .filter(c => c.state?.userId && (!userId || c.state.userId === userId))
+      .map(c => ({ ...c.state, connectionId: c.id }));
+  }
+
+  sendToClientSession(sessionId: string, message: string, userId?: string): string {
+    const matches = [...this.getConnections<ClientConnectionState>()].filter(c =>
+      c.state?.clientSessionId === sessionId && c.state.userId &&
+      (!userId || c.state.userId === userId) && c.state.clientProtocol === 2);
+    if (matches.length !== 1) throw new Error("target session disconnected, ambiguous or requires client protocol 2");
+    matches[0].send(message);
+    return matches[0].id;
+  }
+
+  async onMessage(connection: Connection<ClientConnectionState>, message: string | ArrayBuffer) {
+    if (typeof message !== "string" || !connection.state?.userId || !connection.state.clientSessionId) return;
+    let body: { type?: string; payload?: unknown; data?: { currentRoute?: unknown } };
+    try { body = JSON.parse(message); } catch { return; }
+    if (body.type === "CLIENT_CONTEXT_CHANGED") {
+      const route = body.data?.currentRoute;
+      if (typeof route === "string" && route.length <= 4096) connection.setState({ ...connection.state, currentRoute: route });
+      return;
+    }
+    if (body.type !== "CLIENT_TOOL_RESPONSE") return;
+    for (const plugin of this.plugins) {
+      if (plugin.actions?.clientToolResponse) {
+        await plugin.actions.clientToolResponse({ ...this.pluginContext, sourceClient: {
+          connectionId: connection.id, clientSessionId: connection.state.clientSessionId,
+          userId: connection.state.userId,
+        } }, body.payload);
+      }
+    }
+  }
+
+  private async advanceQueuedInvocation() {
+    if (!["completed", "canceled", "error"].includes(this.runState.status)) return;
+    const queue = [...(this.info.queuedInvocations ?? [])];
+    const next = queue.shift();
+    if (!next) return;
+    this.info.queuedInvocations = queue;
+    // Already authenticated and deduplicated at admission. Retain its origin.
+    await this.startInvocation(next);
+  }
+
+  private async startInvocation(body: InvokeBody) {
+    this.info.activeOrigin = body.origin;
+    this.info.pendingToolCalls = [];
+    this.runState.step = 0;
+    this.runState.reason = undefined;
+    this.runState.status = "running";
+    if (body.origin) {
+      Object.assign(this.vars, { ESTATE_ID: "", ADMIN_MODE: "false", AGENT_SCOPE: "user", WORKSPACE_SCOPE: "user" });
+    }
+    if (body.vars) Object.assign(this.vars, body.vars);
+    if (body.origin) this.vars.USER_ID = body.origin.userId;
+    if (body.messages?.length) this.store.add(body.messages);
+    if (body.files) await Promise.all(Object.entries(body.files).map(([name, content]) => this.fs.writeFile(`~/${name}`, content)));
+    await this.connectToAgency();
+    this.emit(AgentEventType.AGENT_INVOKED, { origin: body.origin });
+    await this.scheduleStep();
   }
 
   get isPaused() {
@@ -281,8 +359,16 @@ export abstract class HubAgent<
     try {
       const body = (await req.json().catch(() => ({}))) as InvokeBody;
 
-      if (body.vars) {
-        Object.assign(this.vars, body.vars);
+      if (body.origin) {
+        const userId = req.headers.get("X-Hub-Verified-User");
+        const { clientSessionId, messageId } = body.origin;
+        if (!userId || !clientSessionId || !messageId || !this.clientSessions(userId).some(c => c.clientSessionId === clientSessionId && c.clientProtocol === 2)) {
+          return Response.json({ error: "message origin must be an authenticated connected session" }, { status: 403 });
+        }
+        body.origin = { ...body.origin, userId };
+        if (this.info.acceptedMessageIds?.includes(messageId)) return Response.json({ status: this.runState.status, duplicate: true }, { status: 202 });
+        this.info.acceptedMessageIds = [...(this.info.acceptedMessageIds ?? []), messageId].slice(-200);
+        body.messages = body.messages?.map(message => ({ ...message, origin: body.origin }));
       }
 
       // Merge attachments into the last user message as multimodal content blocks
@@ -333,33 +419,12 @@ export abstract class HubAgent<
         }
       }
 
-      if (body.messages?.length) this.store.add(body.messages);
-
-      if (body.files && typeof body.files === "object") {
-        const fs = this.fs;
-        await Promise.all(
-          Object.entries(body.files).map(([filename, content]) =>
-            fs.writeFile(`~/${filename}`, content)
-          )
-        );
-      }
-
       const runState = this.runState;
-      if (
-        ["completed", "canceled", "error", "registered"].includes(
-          runState.status
-        )
-      ) {
-        // Clear any stale pending tool calls before restarting. If a previous
-        // run errored out before executePendingTools could clear the list, the
-        // next alarm would immediately fail again (death spiral).
-        this.info.pendingToolCalls = [];
-        runState.status = "running";
-        // Connect to Agency WebSocket for event relay during the run
-        await this.connectToAgency();
-        this.emit(AgentEventType.AGENT_INVOKED, {});
-        await this.ensureScheduled();
+      if (["running", "paused"].includes(runState.status)) {
+        this.info.queuedInvocations = [...(this.info.queuedInvocations ?? []), body];
+        return Response.json({ status: runState.status, queued: true }, { status: 202 });
       }
+      await this.startInvocation(body);
 
       const { status } = runState;
       return Response.json({ status }, { status: 202 });
@@ -515,6 +580,8 @@ export abstract class HubAgent<
       });
       // Disconnect from Agency WebSocket - run errored
       this.disconnectFromAgency();
+    } finally {
+      await this.advanceQueuedInvocation();
     }
   }
 
