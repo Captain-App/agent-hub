@@ -1130,7 +1130,7 @@ Rules:
       if (req.method === "POST" &&
           /^\/agency\/[^/]+\/agent\/[^/]+\/action\/?$/.test(url.pathname)) {
         const body = await req.clone().json().catch(() => null) as { type?: string } | null;
-        if (["readClientDiagnostics", "readClientContext", "executeClientAction", "captureClientScreenshot", "listClientSessions"].includes(body?.type ?? "")) {
+        if (["readClientDiagnostics", "readClientTelemetry", "readClientContext", "executeClientAction", "captureClientScreenshot", "listClientSessions"].includes(body?.type ?? "")) {
           const header = req.headers.get("Authorization") || "";
           const claims = header.startsWith("Bearer ")
             ? await verifyFirebaseToken(header.slice(7)) : null;
