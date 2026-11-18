@@ -51,7 +51,14 @@ export class ModelPlanBuilder {
     return {
       model: this._model ?? this.agent.model ?? "openai:gpt-4.1",
       systemPrompt,
-      messages,
+      messages: messages.map(message => {
+        if (message.role !== "user" || !message.origin) return message;
+        const { origin, ...rest } = message;
+        const text = `[Message origin: ${JSON.stringify(origin)}]`;
+        return { ...rest, content: typeof message.content === "string"
+          ? `${text}\n${message.content}`
+          : [{ type: "text" as const, text }, ...message.content] };
+      }),
       toolDefs,
       toolChoice: this._toolChoice,
       responseFormat: this._responseFormat,

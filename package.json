@@ -22,7 +22,7 @@
     "docs": "typedoc",
     "test": "npm run test -w agents-hub"
   },
-  "overrides": {
-    "zod": "~3.25.76"
+  "devDependencies": {
+    "zod": "^4.6.5"
   }
 }

@@ -44,6 +44,10 @@ export class Store {
         created_at INTEGER NOT NULL
       );
     `);
+    const columns = this.sql.exec("PRAGMA table_info(messages)").toArray();
+    if (!columns.some(column => column.name === "origin")) {
+      this.sql.exec("ALTER TABLE messages ADD COLUMN origin JSON");
+    }
   }
 
   add(input: ChatMessage | ChatMessage[]): void {
@@ -51,7 +55,7 @@ export class Store {
     if (!msgs.length) return;
 
     const now = Date.now();
-    const PARAMS_PER_ROW = 6;
+    const PARAMS_PER_ROW = 7;
     const MAX_PARAMS = 100;
     const CHUNK_SIZE = Math.floor(MAX_PARAMS / PARAMS_PER_ROW);
 
@@ -64,18 +68,19 @@ export class Store {
       const bindings: unknown[] = [];
 
       for (const m of chunk) {
-        placeholders.push(`(?, ?, ?, ?, ?, ?)`);
+        placeholders.push(`(?, ?, ?, ?, ?, ?, ?)`);
         bindings.push(m.role);
         bindings.push(toJSON("content" in m ? m.content : undefined));
         bindings.push(toJSON("toolCalls" in m ? m.toolCalls : undefined));
         bindings.push("toolCallId" in m ? m.toolCallId : null);
         bindings.push("reasoning" in m ? m.reasoning : null);
         bindings.push(now);
+        bindings.push(toJSON(m.origin));
       }
 
       const query = `
         INSERT INTO messages (
-          role, content, tool_calls, tool_call_id, reasoning_content, created_at
+          role, content, tool_calls, tool_call_id, reasoning_content, created_at, origin
         ) VALUES ${placeholders.join(", ")}
       `;
 
@@ -86,7 +91,7 @@ export class Store {
   getContext(limit = 100): ChatMessage[] {
     const cursor = this.sql.exec(`
       SELECT * FROM (
-        SELECT seq, role, content, tool_calls, tool_call_id, reasoning_content, created_at
+        SELECT seq, role, content, tool_calls, tool_call_id, reasoning_content, created_at, origin
         FROM messages 
         ORDER BY seq DESC 
         LIMIT ?
@@ -98,7 +103,7 @@ export class Store {
 
   lastAssistant(): ChatMessage | null {
     const cursor = this.sql.exec(`
-      SELECT role, content, tool_calls, tool_call_id, reasoning_content, created_at
+      SELECT role, content, tool_calls, tool_call_id, reasoning_content, created_at, origin
       FROM messages 
       WHERE role = 'assistant'
       ORDER BY seq DESC
@@ -152,6 +157,7 @@ export class Store {
     for (const r of cursor) {
        out.push({
          role: r.role,
+         origin: r.origin ? JSON.parse(r.origin as string) : undefined,
          content: r.content ? JSON.parse(r.content as string) : null,
          toolCalls: r.tool_calls ? JSON.parse(r.tool_calls as string) : undefined,
          toolCallId: r.tool_call_id || undefined,
@@ -169,7 +175,7 @@ export class Store {
 
   getMessagesAfter(afterSeq: number, limit = 1000): ChatMessage[] {
     const cursor = this.sql.exec(
-      `SELECT seq, role, content, tool_calls, tool_call_id, reasoning_content, created_at
+      `SELECT seq, role, content, tool_calls, tool_call_id, reasoning_content, created_at, origin
        FROM messages 
        WHERE seq > ?
        ORDER BY seq ASC
@@ -182,7 +188,7 @@ export class Store {
 
   getMessagesInRange(startSeq: number, endSeq: number): ChatMessage[] {
     const cursor = this.sql.exec(
-      `SELECT seq, role, content, tool_calls, tool_call_id, reasoning_content, created_at
+      `SELECT seq, role, content, tool_calls, tool_call_id, reasoning_content, created_at, origin
        FROM messages 
        WHERE seq >= ? AND seq <= ?
        ORDER BY seq ASC`,

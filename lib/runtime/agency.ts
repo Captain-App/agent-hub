@@ -223,6 +223,9 @@ export class Agency extends Agent<AgentEnv> {
     // Metrics
     router.get("/metrics", () => this.handleGetMetrics());
 
+    // Presence (which agents have app clients connected)
+    router.get("/presence", (req: IRequest) => this.handlePresence(req));
+
     // Internal
     router.post("/internal/register-agent", (req: IRequest) => this.handleRegisterAgent(req));
     router.get("/internal/blueprint/:name", (req: IRequest) => this.handleGetInternalBlueprint(req.params.name));
@@ -736,13 +739,31 @@ export class Agency extends Agent<AgentEnv> {
           const stub = await getAgentByName(this.exports.HubAgent, row.id);
           const res = await stub.fetch(new Request("http://do/connections"));
           if (res.ok) {
-            const data = await res.json<{ connections: number }>();
-            return { agentId: row.id, agentType: row.type, clients: data.connections };
+            const data = await res.json<{
+              connections: number;
+              clientDetails?: Array<{
+                clientKind?: string;
+                clientPlatform?: string;
+                clientLabel?: string;
+                clientSessionId?: string;
+                appVersion?: string;
+                gitSha?: string;
+                patchNumber?: number;
+                connectedAt?: number;
+                userAgent?: string;
+              }>;
+            }>();
+            return {
+              agentId: row.id,
+              agentType: row.type,
+              clients: data.connections,
+              clientDetails: data.clientDetails || [],
+            };
           }
         } catch {
           /* evicted/destroyed DO — skip */
         }
-        return { agentId: row.id, agentType: row.type, clients: 0 };
+        return { agentId: row.id, agentType: row.type, clients: 0, clientDetails: [] };
       })
     );
 
@@ -1595,6 +1616,11 @@ export class Agency extends Agent<AgentEnv> {
       path: "/" + fsPath,
     });
   }
+
+  // ============================================================
+  // Presence Handler
+  // ============================================================
+
 
   // ============================================================
   // Metrics Handlers

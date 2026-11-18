@@ -1,5 +1,5 @@
 import { env } from "cloudflare:test";
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, vi } from "vitest";
 import { testProvider, getAgentByName, type Env } from "./worker";
 
 declare module "cloudflare:test" {
@@ -552,5 +552,52 @@ describe("Agent Loop Integration", () => {
       // Should have both user messages from the conversation
       expect(userMessages).toHaveLength(2);
     });
+  });
+});
+
+describe("Session message origins", () => {
+  it("persists independent origins and serializes overlapping turns", async () => {
+    testProvider.reset();
+    testProvider.addResponses("First response", "Second response");
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const original = testProvider.invoke.bind(testProvider);
+    const spy = vi.spyOn(testProvider, "invoke").mockImplementation(async (...args) => {
+      await gate;
+      return original(...args);
+    });
+    const { agentStub } = await spawnAgent("multi-device-origins");
+    const sockets: WebSocket[] = [];
+    for (const session of ["browser", "ipad"]) {
+      const res = await agentStub.fetch(new Request(`http://do/?client_protocol=2&client_session_id=${session}&client_platform=${session}`, {
+        headers: { Upgrade: "websocket", "X-Hub-Verified-User": "jack" },
+      }));
+      expect(res.status).toBe(101);
+      res.webSocket!.accept();
+      sockets.push(res.webSocket!);
+    }
+    const invoke = (session: string, id: string) => agentStub.fetch(new Request("http://do/invoke", {
+      method: "POST", headers: { "Content-Type": "application/json", "X-Hub-Verified-User": "jack" },
+      body: JSON.stringify({ messages: [{ role: "user", content: session }], origin: { clientSessionId: session, messageId: id, userId: "forged" } }),
+    }));
+    expect((await invoke("browser", "message-1")).status).toBe(202);
+    const second = await invoke("ipad", "message-2");
+    expect(second.status).toBe(202);
+    expect((await second.json() as {queued: boolean}).queued).toBe(true);
+    const duplicate = await invoke("ipad", "message-2");
+    expect((await duplicate.json() as {duplicate: boolean}).duplicate).toBe(true);
+    release();
+    const result = await waitForStatus(agentStub, "completed");
+    spy.mockRestore();
+    const messages = result.state.messages as Array<{role: string; origin?: {clientSessionId: string; userId: string}}>;
+    expect(messages.filter(m => m.role === "user").map(m => m.origin)).toEqual([
+      {clientSessionId: "browser", messageId: "message-1", userId: "jack"},
+      {clientSessionId: "ipad", messageId: "message-2", userId: "jack"},
+    ]);
+    expect(testProvider.requests).toHaveLength(2);
+    expect(testProvider.requests[0].messages.filter(m => m.role === "user")).toHaveLength(1);
+    expect(JSON.stringify(testProvider.requests[0].messages)).toContain('browser');
+    expect((await invoke("not-connected", "message-3")).status).toBe(403);
+    for (const socket of sockets) socket.close();
   });
 });

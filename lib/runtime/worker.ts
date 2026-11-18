@@ -5,6 +5,7 @@ import type { R2Bucket } from "@cloudflare/workers-types";
 import type { HubAgent } from "./agent";
 import type { Agency } from "./agency";
 import { getAdminHtml } from "./admin-ui";
+import { expectedFirebaseProject, isAdminSurface, isGod, isPublicAdminPage, mayCallAction } from "./access";
 
 export type PluginInfo = {
   name: string;
@@ -126,33 +127,33 @@ function decodeJwtPayload(part: string): JwtPayload {
   return JSON.parse(atob(b64));
 }
 
-async function verifyFirebaseToken(token: string): Promise<boolean> {
+async function verifyFirebaseToken(token: string): Promise<JwtPayload | null> {
   try {
     const parts = token.split(".");
-    if (parts.length !== 3) return false;
+    if (parts.length !== 3) return null;
 
     const header = decodeJwtHeader(parts[0]);
     const payload = decodeJwtPayload(parts[1]);
 
     // Check algorithm
-    if (header.alg !== "RS256") return false;
+    if (header.alg !== "RS256") return null;
 
     // Check issuer matches a known Firebase project
     const project = FIREBASE_PROJECTS.find(
       (p) => payload.iss === `https://securetoken.google.com/${p}` && payload.aud === p
     );
-    if (!project) return false;
+    if (!project) return null;
 
     // Check expiry (allow 5 min clock skew)
     const now = Math.floor(Date.now() / 1000);
-    if (!payload.exp || payload.exp < now - 300) return false;
-    if (!payload.iat || payload.iat > now + 300) return false;
-    if (!payload.sub) return false;
+    if (!payload.exp || payload.exp < now - 300) return null;
+    if (!payload.iat || payload.iat > now + 300) return null;
+    if (!payload.sub) return null;
 
     // Verify signature with Google's public key
     const certs = await fetchGoogleCerts();
     const key = header.kid ? certs[header.kid] : undefined;
-    if (!key) return false;
+    if (!key) return null;
 
     let sigB64 = parts[2].replace(/-/g, "+").replace(/_/g, "/");
     while (sigB64.length % 4) sigB64 += "=";
@@ -162,9 +163,10 @@ async function verifyFirebaseToken(token: string): Promise<boolean> {
     );
     const dataBytes = new TextEncoder().encode(parts[0] + "." + parts[1]);
 
-    return await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, signatureBytes, dataBytes);
+    return await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, signatureBytes, dataBytes)
+      ? payload : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -582,11 +584,11 @@ const getMetrics = async (req: IRequest, { ctx }: RequestContext) => {
 const getPresence = async (req: IRequest, { ctx, env }: RequestContext) => {
   const notFound = await requireAgency(req.params.agencyId, env);
   if (notFound) return notFound;
+
   const agencyStub = await getAgencyStub(req.params.agencyId, ctx);
-  const doUrl = new URL(req.url);
-  return agencyStub.fetch(
-    new Request(`http://do/presence${doUrl.search}`)
-  );
+  // Forward query string (e.g. ?uid=xxx) to Agency DO
+  const doUrl = createDoUrl(req, "/presence");
+  return agencyStub.fetch(new Request(doUrl));
 };
 
 const handleAgencyWebSocket = async (req: IRequest, { ctx }: RequestContext) => {
@@ -704,6 +706,9 @@ export const createHandler = (opts: HandlerOptions = {}) => {
 
   // Metrics
   router.get("/agency/:agencyId/metrics", getMetrics);
+
+  // Presence (which agents have connected app clients)
+  router.get("/agency/:agencyId/presence", getPresence);
 
   // Agency WebSocket (for UI event subscriptions)
   router.get("/agency/:agencyId/ws", handleAgencyWebSocket);
@@ -1096,6 +1101,62 @@ Rules:
   return {
     async fetch(req: Request, env: HandlerEnv, ctx: CfCtx) {
       const url = new URL(req.url);
+      // Never accept identity headers from the network. Only the verified
+      // Firebase handshake/invoke path below can populate them.
+      const headers = new Headers(req.headers);
+      headers.delete("X-Hub-Verified-User");
+      req = new Request(req, { headers });
+      const agentMatch = url.pathname.match(/^\/agency\/[^/]+\/agent\/([^/]+)(?:\/(.*))?$/);
+      const isSessionSocket = req.headers.get("Upgrade")?.toLowerCase() === "websocket" && url.searchParams.get("client_protocol") === "2";
+      const invokeBody = req.method === "POST" && agentMatch?.[2] === "invoke"
+        ? await req.clone().json().catch(() => null) as { origin?: unknown } | null : null;
+      const isAppInvoke = req.method === "POST" && agentMatch?.[2] === "invoke" && /^co2-(?:admin-)?assistant-/.test(agentMatch[1]);
+      if (isAppInvoke && !invokeBody?.origin) return withCors(new Response("Client update required: message origin missing", { status: 409 }));
+      if (isSessionSocket || invokeBody?.origin) {
+        const token = isSessionSocket ? url.searchParams.get("firebase_token") : req.headers.get("Authorization")?.replace(/^Bearer /, "");
+        const claims = token ? await verifyFirebaseToken(token) : null;
+        const expectedProject = url.hostname.startsWith("dev.") || url.hostname.includes("-dev.")
+          ? "co2-target-asset-tracking-dev" : "co2-target-asset-tracking";
+        const agentId = agentMatch ? decodeURIComponent(agentMatch[1]) : "";
+        const uid = claims?.sub;
+        const ownsConversation = typeof uid === "string" && ["co2-assistant-", "co2-admin-assistant-"].some(prefix => agentId === prefix + uid || agentId.startsWith(prefix + uid + "-"));
+        if (!claims || claims.aud !== expectedProject || !ownsConversation) return withCors(new Response("Forbidden session identity", { status: 403 }));
+        headers.set("X-Hub-Verified-User", uid!);
+        req = new Request(req, { headers });
+      }
+
+      // Deny by default (see access.ts). The shared app secret is embedded in
+      // web builds, so it proves nothing: an agent action needs a verified
+      // Firebase token for god or the agent's own user, unless the action is
+      // listed as safe for the secret. The check keys on the path the agent
+      // will actually see, so no spelling of the URL reaches /action unchecked.
+      const agentPathname = agentMatch
+        ? new URL("/" + (agentMatch[2] ?? ""), "http://do").pathname : null;
+      // A CORS preflight carries no body or token, and the browser sends it
+      // before every cross-origin action POST: let it reach the 204 below.
+      if (agentPathname === "/action" && req.method !== "OPTIONS") {
+        const body = await req.clone().json().catch(() => null) as { type?: unknown } | null;
+        const header = req.headers.get("Authorization") || "";
+        const claims = header.startsWith("Bearer ")
+          ? await verifyFirebaseToken(header.slice(7)) : null;
+        // The raw segment, because that is the name the router addresses the agent by.
+        if (!mayCallAction(body?.type, agentMatch![1], claims,
+            expectedFirebaseProject(url.hostname))) {
+          return withCors(new Response("Forbidden", { status: 403 }));
+        }
+      }
+
+      // The admin API reads every user's activity and spends the LLM key, so
+      // everything under /admin except the redirect page itself needs god.
+      if (isAdminSurface(url.pathname) && req.method !== "OPTIONS" &&
+          !isPublicAdminPage(req.method, url.pathname)) {
+        const header = req.headers.get("Authorization") || "";
+        const claims = header.startsWith("Bearer ")
+          ? await verifyFirebaseToken(header.slice(7)) : null;
+        if (!isGod(claims, expectedFirebaseProject(url.hostname))) {
+          return withCors(new Response(claims ? "Forbidden" : "Unauthorized", { status: claims ? 403 : 401 }));
+        }
+      }
 
       // CORS preflight
       if (req.method === "OPTIONS") {
@@ -1107,11 +1168,11 @@ Rules:
       // 2. Authorization: Bearer <firebase-id-token> (user sign-in from admin UI)
       // Skip for OAuth callbacks and the /admin page itself (serves static HTML)
       const isOAuthCallback = /^\/oauth\/agency\/[^/]+\/callback$/.test(url.pathname) && url.searchParams.has("state");
-      const isAdminPage = url.pathname.startsWith("/admin");
+      const isAdminPage = isAdminSurface(url.pathname); // checked for god above
       const providedSecret = req.headers.get("X-SECRET") || url.searchParams.get("key");
       const secret = process.env.SECRET;
 
-      let authed = !secret || isOAuthCallback || isAdminPage;
+      let authed = !secret || isOAuthCallback || isAdminPage || req.headers.has("X-Hub-Verified-User");
 
       // Check legacy secret
       if (!authed && providedSecret && secret && secureCompare(providedSecret, secret)) {
