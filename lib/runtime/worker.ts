@@ -5,6 +5,7 @@ import type { R2Bucket } from "@cloudflare/workers-types";
 import type { HubAgent } from "./agent";
 import type { Agency } from "./agency";
 import { getAdminHtml } from "./admin-ui";
+import { expectedFirebaseProject, isAdminSurface, isGod, isPublicAdminPage, mayCallAction } from "./access";
 
 export type PluginInfo = {
   name: string;
@@ -1124,23 +1125,34 @@ Rules:
         req = new Request(req, { headers });
       }
 
-      // A diagnostic read reaches another user's live tab. The shared app
-      // secret is embedded in web builds, so require a verified god-role
-      // Firebase token even when that secret is present.
-      if (req.method === "POST" &&
-          /^\/agency\/[^/]+\/agent\/[^/]+\/action\/?$/.test(url.pathname)) {
-        const body = await req.clone().json().catch(() => null) as { type?: string } | null;
-        if (["readClientDiagnostics", "readClientTelemetry", "readClientContext", "executeClientAction", "captureClientScreenshot", "listClientSessions"].includes(body?.type ?? "")) {
-          const header = req.headers.get("Authorization") || "";
-          const claims = header.startsWith("Bearer ")
-            ? await verifyFirebaseToken(header.slice(7)) : null;
-          const expectedProject = url.hostname.startsWith("dev.") ||
-            url.hostname.includes("-dev.")
-            ? "co2-target-asset-tracking-dev" : "co2-target-asset-tracking";
-          if (!claims || claims.aud !== expectedProject ||
-              !Array.isArray(claims.roles) || !claims.roles.includes("god")) {
-            return withCors(new Response("Forbidden", { status: 403 }));
-          }
+      // Deny by default (see access.ts). The shared app secret is embedded in
+      // web builds, so it proves nothing: an agent action needs a verified
+      // Firebase token for god or the agent's own user, unless the action is
+      // listed as safe for the secret. The check keys on the path the agent
+      // will actually see, so no spelling of the URL reaches /action unchecked.
+      const agentPathname = agentMatch
+        ? new URL("/" + (agentMatch[2] ?? ""), "http://do").pathname : null;
+      if (agentPathname === "/action") {
+        const body = await req.clone().json().catch(() => null) as { type?: unknown } | null;
+        const header = req.headers.get("Authorization") || "";
+        const claims = header.startsWith("Bearer ")
+          ? await verifyFirebaseToken(header.slice(7)) : null;
+        // The raw segment, because that is the name the router addresses the agent by.
+        if (!mayCallAction(body?.type, agentMatch![1], claims,
+            expectedFirebaseProject(url.hostname))) {
+          return withCors(new Response("Forbidden", { status: 403 }));
+        }
+      }
+
+      // The admin API reads every user's activity and spends the LLM key, so
+      // everything under /admin except the redirect page itself needs god.
+      if (isAdminSurface(url.pathname) && req.method !== "OPTIONS" &&
+          !isPublicAdminPage(req.method, url.pathname)) {
+        const header = req.headers.get("Authorization") || "";
+        const claims = header.startsWith("Bearer ")
+          ? await verifyFirebaseToken(header.slice(7)) : null;
+        if (!isGod(claims, expectedFirebaseProject(url.hostname))) {
+          return withCors(new Response(claims ? "Forbidden" : "Unauthorized", { status: claims ? 403 : 401 }));
         }
       }
 
@@ -1154,7 +1166,7 @@ Rules:
       // 2. Authorization: Bearer <firebase-id-token> (user sign-in from admin UI)
       // Skip for OAuth callbacks and the /admin page itself (serves static HTML)
       const isOAuthCallback = /^\/oauth\/agency\/[^/]+\/callback$/.test(url.pathname) && url.searchParams.has("state");
-      const isAdminPage = url.pathname.startsWith("/admin");
+      const isAdminPage = isAdminSurface(url.pathname); // checked for god above
       const providedSecret = req.headers.get("X-SECRET") || url.searchParams.get("key");
       const secret = process.env.SECRET;
 
