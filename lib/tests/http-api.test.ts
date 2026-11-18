@@ -25,6 +25,43 @@ describe("HTTP API", () => {
     expect(response.status).toBe(403);
   });
 
+  describe("action preflight (web clients)", () => {
+    const url = "http://localhost/agency/default/agent/co2-assistant-u1/action";
+
+    it("answers an OPTIONS preflight with 204 and the CORS headers", async () => {
+      const response = await SELF.fetch(url, {
+        method: "OPTIONS",
+        headers: {
+          Origin: "https://app.co2targettracking.co.uk",
+          "Access-Control-Request-Method": "POST",
+          "Access-Control-Request-Headers": "content-type,x-secret,authorization",
+        },
+      });
+      expect(response.status).toBe(204);
+      expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
+      expect(response.headers.get("Access-Control-Allow-Methods")).toContain("POST");
+      expect(response.headers.get("Access-Control-Allow-Headers")).toBe("*");
+    });
+
+    it("still lets devScreenshotResponse through on the secret alone", async () => {
+      const response = await SELF.fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-SECRET": "shared-app-secret" },
+        body: JSON.stringify({ type: "devScreenshotResponse", requestId: "none", error: "e" }),
+      });
+      expect([401, 403]).not.toContain(response.status);
+    });
+
+    it("still refuses devRefreshRequest on the secret alone", async () => {
+      const response = await SELF.fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-SECRET": "shared-app-secret" },
+        body: JSON.stringify({ type: "devRefreshRequest" }),
+      });
+      expect(response.status).toBe(403);
+    });
+  });
+
   describe("plugins endpoint", () => {
     it("should list registered plugins and tools", async () => {
       const client = createTestClient();

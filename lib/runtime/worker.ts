@@ -1132,7 +1132,9 @@ Rules:
       // will actually see, so no spelling of the URL reaches /action unchecked.
       const agentPathname = agentMatch
         ? new URL("/" + (agentMatch[2] ?? ""), "http://do").pathname : null;
-      if (agentPathname === "/action") {
+      // A CORS preflight carries no body or token, and the browser sends it
+      // before every cross-origin action POST: let it reach the 204 below.
+      if (agentPathname === "/action" && req.method !== "OPTIONS") {
         const body = await req.clone().json().catch(() => null) as { type?: unknown } | null;
         const header = req.headers.get("Authorization") || "";
         const claims = header.startsWith("Bearer ")
