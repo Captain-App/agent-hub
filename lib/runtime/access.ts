@@ -36,7 +36,8 @@ export const SECRET_CALLABLE_ACTIONS: ReadonlySet<string> = new Set([
 
 /**
  * Actions that reach into a device's live tab beyond what its own user can ask
- * the assistant for. Only god may call them, even on the caller's own agent.
+ * the assistant for, or that lift a limit set on the user. Only god may call
+ * them, even on the caller's own agent.
  */
 export const GOD_ONLY_ACTIONS: ReadonlySet<string> = new Set([
   "readClientDiagnostics",
@@ -45,6 +46,8 @@ export const GOD_ONLY_ACTIONS: ReadonlySet<string> = new Set([
   "executeClientAction",
   "captureClientScreenshot",
   "listClientSessions",
+  // A user must not lift their own rate limit.
+  "resetUsage",
 ]);
 
 const OWNED_AGENT_PREFIXES = ["co2-assistant-", "co2-admin-assistant-"];

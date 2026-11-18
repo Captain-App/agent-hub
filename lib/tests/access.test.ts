@@ -85,6 +85,11 @@ describe("agent actions are denied by default", () => {
     expect(response.status).toBe(403);
   });
 
+  it("a user can't reset their own rate limit", async () => {
+    const own = await token("owneruid");
+    expect((await action("co2-assistant-owneruid", "resetUsage", bearer(own))).status).toBe(403);
+  });
+
   it("god may navigate anyone's tabs", async () => {
     const god = await token("operatoruid", ["god"]);
     const response = await action("co2-assistant-victimuid", "forceNavigate", bearer(god), { route: "/estates" });
